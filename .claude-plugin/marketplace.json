@@ -1,0 +1,5 @@
+{
+  "name": "claude-context-guard",
+  "owner": { "name": "Chris Steuble" },
+  "plugins": [{ "name": "context-guard", "source": "./" }]
+}
