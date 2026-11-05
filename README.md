@@ -5,7 +5,7 @@ Chris's context guard, a Claude Code mod. Built 2026-10-19, rebuilt 2026-11-04 o
 What it does:
 
 1. **Meter.** The engine pushes the context fill on every change (`session.measure`). No timer, no tokens.
-2. **Three warnings** before auto-compaction, each a question box (the one channel both the desktop app and the phone draw; toasts, the status line, bands, panes, log rows, and native notifications were all tested 2026-11-04 and do not show). Tiers sit at the fire point minus 15 / 8 / 3 points: placeholder 68 / 75 / 80 on a 200K window until the first real auto-compaction measures the fire point, which is then stored per window size and persists across sessions. Each tier fires once per session and re-arms after a compaction.
+2. **Three warnings** before auto-compaction, each a question box (the one channel both the desktop app and the phone draw; toasts, the status line, bands, panes, log rows, and native notifications were all tested 2026-11-04 and do not show). The first tier is fixed at 65 percent. The other two sit at the fire point minus 8 / 3 points: placeholder 75 / 80 until the first real auto-compaction measures the fire point, which is then stored per window size and persists across sessions. Each tier fires once per session and re-arms after a compaction.
    - `Context NN percent. WRAP UP SOON. ...`
    - `Context NN percent. I SAID WRAP UP! ...`
    - `Context NN percent. WRAP UP NOW!! ...`

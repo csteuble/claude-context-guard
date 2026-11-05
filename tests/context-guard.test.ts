@@ -45,14 +45,14 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
   return { asked, store }
 }
 
-test('three tiers fire once each at 68 / 75 / 80 on the placeholder fire point, in order', async ($, on) => {
+test('three tiers fire once each at 65 / 75 / 80 on the placeholder fire point, in order', async ($, on) => {
   const h = harness(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   expect(h.asked.length).toBe(0)
 
-  await $.session.measure(measure(50))
+  await $.session.measure(measure(64))
   expect(h.asked.length).toBe(0)
-  await $.session.measure(measure(68))
+  await $.session.measure(measure(65))
   expect(h.asked.length).toBe(1)
   expect(h.asked[0]).toContain('WRAP UP SOON')
   await $.session.measure(measure(70))
@@ -106,13 +106,19 @@ test('a manual compaction pins the rules but records nothing and does not scold'
   expect(h.store.firePoints).toBe(undefined)
 })
 
-test('a stored fire point moves the tiers', async ($, on) => {
-  const h = harness(on, { stored: { '200000': 76 } })
+test('a stored fire point moves tiers 2 and 3, and the first stays at 65', async ($, on) => {
+  const h = harness(on, { stored: { '200000': 96 } })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.session.measure(measure(60))
+  await $.session.measure(measure(64))
   expect(h.asked.length).toBe(0)
-  await $.session.measure(measure(61))
+  await $.session.measure(measure(65))
   expect(h.asked.length).toBe(1)
+  await $.session.measure(measure(87))
+  expect(h.asked.length).toBe(1)
+  await $.session.measure(measure(88))
+  expect(h.asked.length).toBe(2)
+  await $.session.measure(measure(93))
+  expect(h.asked.length).toBe(3)
 })
 
 test('the rules ride beside a typed prompt, from the repo when the fetch works, else baked', async ($, on) => {
@@ -135,5 +141,5 @@ test('the context_fill tool answers with percent, fire point and tiers', async (
   const r = await $.tool.call({ tool: 'mcp__context-guard__context_fill' })
   expect(String(r.result)).toContain('Context: 42%')
   expect(String(r.result)).toContain('fire point: 83% (assumed')
-  expect(String(r.result)).toContain('68 / 75 / 80')
+  expect(String(r.result)).toContain('65 / 75 / 80')
 })

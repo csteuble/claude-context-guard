@@ -1,10 +1,10 @@
 // context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day.
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
-// 2. Three warning tiers, each a question box (the one channel both his desktop and phone draw),
-//    at the auto-compaction fire point minus 15 / 8 / 3 points. The fire point is a placeholder
-//    (83 on a 200K window) until the first real auto-compaction measures it; the measurement is
-//    stored per window size and persists across sessions.
+// 2. Three warning tiers, each a question box (the one channel both his desktop and phone draw).
+//    The first is fixed at 65 percent (Chris, 2026-11-05). The other two sit at the auto-compaction
+//    fire point minus 8 / 3 points. The fire point is a placeholder (83) until the first real
+//    auto-compaction measures it; the measurement is stored per window size and persists across sessions.
 // 3. On an auto-compaction: a scolding box, and the standing rules pinned into the summary.
 // 4. A tool, mcp__context-guard__context_fill, the model calls only when Chris asks where context is at.
 // 5. The standing rules ride as hidden context beside every message Chris types (prompt.submit); the
@@ -15,7 +15,9 @@ import type { EngineInterface, Register } from 'claude-code'
 import { RULES, RULES_URL } from './rules'
 
 const PLACEHOLDER_FIRE_PCT = 83
-const TIER_OFFSETS = [15, 8, 3] as const
+// Chris, 2026-11-05 14:43, option 1: fixed, so a measured fire point cannot push the first warning later.
+const FIRST_TIER_PCT = 65
+const LATER_TIER_OFFSETS = [8, 3] as const
 const STORE_KEY = 'firePoints'
 
 // Chris's wording, 2026-11-04 10:21 to 10:32.
@@ -43,6 +45,10 @@ let rulesSource = 'baked'
 let lastPct: number | undefined
 let lastWindow: number | undefined
 let tiersFired = 0
+
+function tierThresholds(fire: number): number[] {
+  return [FIRST_TIER_PCT, ...LATER_TIER_OFFSETS.map(o => fire - o)]
+}
 
 async function loadRules($: EngineInterface): Promise<void> {
   try {
@@ -92,7 +98,7 @@ async function onFill($: EngineInterface, pct: number | undefined, window: numbe
   lastPct = pct
   lastWindow = window
   const fire = await firePoint($, window)
-  const thresholds = TIER_OFFSETS.map(o => fire - o)
+  const thresholds = tierThresholds(fire)
   // Fire every tier crossed and not yet fired, highest text last.
   while (tiersFired < thresholds.length) {
     const threshold = thresholds[tiersFired]
@@ -155,7 +161,7 @@ export const register: Register = on => {
     const text =
       `Context: ${pct ?? '?'}% (${tokens ?? '?'} of ${window ?? '?'} tokens). ` +
       `Auto-compaction fire point: ${fire}% (${measured ? 'measured' : 'assumed, not yet measured'}). ` +
-      `Warning tiers: ${TIER_OFFSETS.map(o => fire - o).join(' / ')}. Rules source: ${rulesSource}.`
+      `Warning tiers: ${tierThresholds(fire).join(' / ')}. Rules source: ${rulesSource}.`
     return { result: text }
   })
 
