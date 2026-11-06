@@ -22,7 +22,7 @@ export const RULES = `STANDING RULES (Chris; this list rides beside every messag
 - A question from Ed, relayed by Chris, is answered first, before any build.
 - The answer goes first. No tool call, file write, or log entry runs before he has his answer.
 - Nothing for Ed reaches Chris until every sentence is checked cold against today's engine and the 2006 engine. Check first, then hand over; never the other way.
-- Wood Usage Report: Wood Usage Report - Punch List.md is the one list of what he still has to deal with. New items go on it at once; never raise an open item that is not on it. When he rules on an item, same turn: dated To-Do entry with his words, older To-Do entries on it marked CLOSED, item moved to the list's Closed section.
+- Wood Usage Report: Wood Usage Report - Punch List.md is the one list of what he still has to deal with. New items go on it at once; never raise an open item that is not on it. When he rules on an item, same turn: dated To-Do entry with his words, older To-Do entries on it marked CLOSED, item struck in place with its number kept. Numbers never change mid-day; only the AM or PM build moves struck items to Closed and renumbers.
 - Short. No validation language. No em-dashes or en-dashes. Oxford commas.
 
 After a compaction: re-read these rules and the session's NEXT pointer before replying. Do not get wordy.`
