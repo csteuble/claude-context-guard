@@ -20,6 +20,8 @@ export const RULES = `STANDING RULES (Chris; this list rides beside every messag
 - Every ask carries the card text again; never "waiting on your call" alone.
 - Mid-turn text is invisible to him; anything he must read goes by SendUserMessage first.
 - A question from Ed, relayed by Chris, is answered first, before any build.
+- The answer goes first. No tool call, file write, or log entry runs before he has his answer.
+- Nothing for Ed reaches Chris until every sentence is checked cold against today's engine and the 2006 engine. Check first, then hand over; never the other way.
 - Wood Usage Report: Wood Usage Report - Punch List.md is the one list of what he still has to deal with. New items go on it at once; never raise an open item that is not on it. When he rules on an item, same turn: dated To-Do entry with his words, older To-Do entries on it marked CLOSED, item moved to the list's Closed section.
 - Short. No validation language. No em-dashes or en-dashes. Oxford commas.
 
