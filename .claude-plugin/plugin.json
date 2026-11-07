@@ -1,6 +1,6 @@
 {
   "name": "context-guard",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Chris's context guard: warns at three tiers before auto-compaction (question boxes on desktop and phone), measures the real fire point, pins the standing rules into every compaction summary, carries the standing rules beside every message, and answers where context is at on request.",
   "author": {
     "name": "Chris Steuble (built with Claude)"

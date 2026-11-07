@@ -1,4 +1,4 @@
-// context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day.
+// context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06.
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warning tiers, each a question box (the one channel both his desktop and phone draw).
@@ -6,7 +6,8 @@
 //    fire point minus 8 / 3 points. The fire point is a placeholder (83) until the first real
 //    auto-compaction measures it; the measurement is stored per window size and persists across sessions.
 // 3. On an auto-compaction: a scolding box, and the standing rules pinned into the summary.
-// 4. A tool, mcp__context-guard__context_fill, the model calls only when Chris asks where context is at.
+// 4. A tool, mcp__context-guard__context_fill (deferred; the model loads it with ToolSearch), called only when
+//    Chris asks where context is at.
 // 5. The standing rules ride as hidden context beside every message Chris types (prompt.submit); the
 //    text is fetched from the GitHub repo at session start, baked copy as fallback.
 //    (prompt.compose and prompt.context are blocked for mods by the default security plugin; tested 2026-11-04.)
@@ -113,13 +114,20 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadRules($)
     tiersFired = 0
-    await $.tool.register({
-      name: 'context_fill',
-      description:
-        'Answers how full the context window is right now (percent, tokens, window, the measured or assumed auto-compaction fire point). Call it only when Chris asks where context is at.',
-      inputSchema: { type: 'object', properties: {} },
-      isDeferred: false,
-    })
+    // Deferred (2026-11-06): a tool kept in front is not announced to the model when the mod attaches after
+    // the conversation started (the 11-06 mid-session attach), while deferred tools are listed and loaded
+    // with ToolSearch. The register call is guarded so a rejection can never skip next(e).
+    try {
+      await $.tool.register({
+        name: 'context_fill',
+        description:
+          'Answers how full the context window is right now (percent, tokens, window, the measured or assumed auto-compaction fire point). Call it only when Chris asks where context is at; load it with ToolSearch first.',
+        inputSchema: { type: 'object', properties: {} },
+        isDeferred: true,
+      })
+    } catch {
+      // the tool is a convenience; the warnings and the rules do not depend on it
+    }
     try {
       const u = await $.session.usage()
       await onFill($, u.context.percent, u.context.window)

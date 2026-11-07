@@ -14,8 +14,9 @@ const measure = (percent: number, window = 200_000) => ({
   changed: ['context' as const],
 })
 
-function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void } = {}) {
+function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean } = {}) {
   const asked: string[] = []
+  const registered: Array<Record<string, unknown>> = []
   const store: Record<string, unknown> = opts.stored ? { firePoints: opts.stored } : {}
   on('http.fetch', () => ({
     value: opts.fetchOk
@@ -27,7 +28,11 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     store[e.key] = e.value
     return { value: undefined }
   })
-  on('tool.register', () => ({ value: { tool: 'mcp__context-guard__context_fill' } }))
+  on('tool.register', (_, e) => {
+    registered.push(e as Record<string, unknown>)
+    if (opts.registerThrows) throw new Error('register refused')
+    return { value: { tool: 'mcp__context-guard__context_fill' } }
+  })
   on('session.usage', () => usage(opts.usagePct ?? 10))
   // $.ui.ask is a tool.call of AskUserQuestion under the hood; answer it as the engine would.
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
@@ -42,7 +47,7 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     return { messages: e.messages }
   })
   on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
-  return { asked, store }
+  return { asked, store, registered }
 }
 
 test('three tiers fire once each at 65 / 75 / 80 on the placeholder fire point, in order', async ($, on) => {
@@ -142,4 +147,21 @@ test('the context_fill tool answers with percent, fire point and tiers', async (
   expect(String(r.result)).toContain('Context: 42%')
   expect(String(r.result)).toContain('fire point: 83% (assumed')
   expect(String(r.result)).toContain('65 / 75 / 80')
+})
+
+test('the tool registers as deferred, so it is announced when the mod attaches mid-conversation', async ($, on) => {
+  const h = harness(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(h.registered.length).toBe(1)
+  expect(h.registered[0].name).toBe('context_fill')
+  expect(h.registered[0].isDeferred).toBe(true)
+})
+
+test('a refused tool registration does not stop session start: the rules still ride and the tiers still fire', async ($, on) => {
+  const h = harness(on, { registerThrows: true, fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.prompt.submit({ text: 'hello' })
+  expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
+  await $.session.measure(measure(65))
+  expect(h.asked.length).toBe(1)
 })
