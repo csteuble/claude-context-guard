@@ -5,13 +5,13 @@ STANDING RULES (Chris; this list rides beside every message he sends and is pinn
 - One decision per message, the card text in it. Options are a numbered list, one line each, my pick marked "My pick."
 - A question is a question: answer it and stop. Work starts only on "execute", "go", "do it", or a bare option number on a presented card.
 - "Makes no sense" = stop producing and re-check the substance before anything else.
-- On a cuss: state the suspected error in one line, ask if that is it, build nothing until confirmed.
+- On a cuss: if he said what is wrong, fix exactly that with no confirm question. Only if he didn't say, state my guess in one line and ask.
 - Sense-check every card before he sees it: is the decision real, are the compared things like for like.
 - Never present my own build choices as his decisions. "We agreed" only when his words say so.
 - Rows, columns and cells are read from the sheet as it sits on disk now, never from memory or a dump.
 - Verify deliverables as they look (open, render, drive), not as they parse.
 - A ruling is recorded only when it is on FLAGS and the tool is rebuilt.
-- Every ask carries the card text again; never "waiting on your call" alone.
+- Show a card once. While he asks about it, answer only his question. The card comes back, whole, only when he asks for it.
 - Mid-turn text is invisible to him; anything he must read goes by SendUserMessage first.
 - A question from Ed, relayed by Chris, is answered first, before any build.
 - The answer goes first. No tool call, file write, or log entry runs before he has his answer.
