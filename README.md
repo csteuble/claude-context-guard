@@ -5,13 +5,17 @@ Chris's context guard, a Claude Code mod. Built 2026-10-19, rebuilt 2026-11-04 o
 What it does:
 
 1. **Meter.** The engine pushes the context fill on every change (`session.measure`). No timer, no tokens.
-2. **Three warnings** before auto-compaction, each a question box (the one channel both the desktop app and the phone draw; toasts, the status line, bands, panes, log rows, and native notifications were all tested 2026-11-04 and do not show). The first tier is fixed at 65 percent. The other two sit at the fire point minus 8 / 3 points: placeholder 75 / 80 until the first real auto-compaction measures the fire point, which is then stored per window size and persists across sessions. Each tier fires once per session and re-arms after a compaction.
-   - `Context NN percent. WRAP UP SOON. ...`
-   - `Context NN percent. I SAID WRAP UP! ...`
-   - `Context NN percent. WRAP UP NOW!! ...`
+2. **Three warnings** at fixed points of 60, 65, and 70 percent, each a question box (the one channel both the desktop app and the phone draw; toasts, the status line, bands, panes, log rows, and native notifications were all tested 2026-11-04 and do not show). Each fires once per session and re-arms after a compaction. NN is the actual percent at that moment. The button is `OK, wrapping up` (the engine's dialog takes 2 to 4 options, so it adds a `Yes` after a single label).
+   - `CONTEXT: NN% - Wrap up soon.`
+   - `CONTEXT: NN% - I said wrap up!`
+   - `CONTEXT: NN% - WRAP THE FUCK UP!!`
+   The real auto-compaction fire point is still measured on every auto-compaction and stored per window size; it no longer moves the warnings.
 3. **On an auto-compaction:** a scolding box ("We blew it ... say handoff and start a new session immediately"), the fire point recorded, and the standing rules pinned into the compaction summary with a NEXT section.
-4. **`mcp__context-guard__context_fill`**, a tool the model calls only when Chris asks where context is at. Zero cost until asked. Since 1.0.2 it is registered as a deferred tool: the model loads it with ToolSearch (`select:mcp__context-guard__context_fill`) and then calls it. Deferred is what gets it announced when the mod attaches after a conversation has started (the 2026-11-06 mid-session attach left a kept-in-front tool registered but never announced).
-5. **Standing rules ride beside every message Chris types** (`prompt.submit` context, about 600 tokens). This replaces the 30-minute rules-reload timer. The text comes from `Standing Rules.md` in this repo, fetched at every session start; `hooks/rules.ts` holds a baked fallback for when the fetch fails. `prompt.compose` and `prompt.context` are blocked for mods by the default security plugin, so they are not used.
+4. **`mcp__context-guard__context_fill`**, a tool the model calls only when Chris asks where context is at. Zero cost until asked. It answers with the readout, which the model shows exactly as returned: two blank lines, `**CONTEXT: NN%** (tokens of window tokens)`, two blank lines. Each blank line is a paragraph holding a non-breaking space, so the chat cannot squeeze it away. When the rules did not load from GitHub, one blank line and the italic lines `*RULES BROKEN*` / `*Start a new session or tell Claude to fix it.*` (joined by a hard line break) go before the closing blank lines. Since 1.0.2 it is registered as a deferred tool: the model loads it with ToolSearch (`select:mcp__context-guard__context_fill`) and then calls it. Deferred is what gets it announced when the mod attaches after a conversation has started (the 2026-11-06 mid-session attach left a kept-in-front tool registered but never announced).
+5. **Standing rules ride beside every message Chris types** (`prompt.submit` context, about 600 tokens). This replaces the 30-minute rules-reload timer. The text comes from `Standing Rules.md` in this repo, fetched at every session start; `hooks/rules.ts` holds a baked fallback for when the fetch fails. `prompt.compose` and `prompt.context` are blocked for mods by the default security plugin, so they are not used. When the fetch fails, a box pops at session start: `RULES BROKEN` / `Start a new session or tell Claude to fix it.`, button `OK` (plus the engine's `Yes`).
+6. **Shortcuts**, read only when they are the whole message (any capitals; trailing periods, question marks, and spaces allowed):
+   - `CC` or `Context`: the reply is the readout alone. A mod's only way to write in chat without a Claude turn is a plain notice, which cannot carry the bold line or the forced blank lines, so the mod writes the readout into the message's hidden context with the order to reply with it alone, and Claude replies.
+   - `CC TEST`: the mod pops the 60 percent warning box once with the current percent and drops the message, so no Claude turn runs (the engine shows the dropped message's reason, `CC TEST`). The test does not use up the real 60 percent warning.
 
 ## Changing the rules
 
@@ -29,10 +33,11 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Checks
 
-`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 8 tests (tiers, jump, auto and manual compaction, stored fire point, rules fetch and fallback, the tool).
+`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 15 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts).
 
 ## Versions
 
+- 1.0.3 (2026-11-15): warnings at fixed 60 / 65 / 70 with new text; the readout is the bold CONTEXT line between forced blank lines, with no fire point, tiers, or rules source; RULES BROKEN box and readout lines when the rules did not load from GitHub; the `CC`, `Context`, and `CC TEST` shortcuts; 15 tests.
 - 1.0.2 (2026-11-06): the tool is deferred so it is announced on a mid-conversation attach; the register call is guarded so a refusal cannot stop session start; two tests added (10 total); the marketplace entry carries the version.
 - 1.0.1 (2026-11-05): the first warning is fixed at 65 percent (Chris's ruling); tiers 2 and 3 stay at the fire point minus 8 and 3.
 - 1.0.0 (2026-11-04): first release.

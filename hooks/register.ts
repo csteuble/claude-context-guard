@@ -1,38 +1,44 @@
-// context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06.
+// context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06;
+// 1.0.3 on 2026-11-15.
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
-// 2. Three warning tiers, each a question box (the one channel both his desktop and phone draw).
-//    The first is fixed at 65 percent (Chris, 2026-11-05). The other two sit at the auto-compaction
-//    fire point minus 8 / 3 points. The fire point is a placeholder (83) until the first real
-//    auto-compaction measures it; the measurement is stored per window size and persists across sessions.
+// 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of
+//    60, 65, and 70 percent (Chris, 2026-11-15). Each fires once per session and re-arms after a compaction.
+//    The real auto-compaction fire point is still measured on an auto-compaction and stored per window size.
 // 3. On an auto-compaction: a scolding box, and the standing rules pinned into the summary.
 // 4. A tool, mcp__context-guard__context_fill (deferred; the model loads it with ToolSearch), called only when
-//    Chris asks where context is at.
+//    Chris asks where context is at. It answers with the readout, which the model shows as is.
 // 5. The standing rules ride as hidden context beside every message Chris types (prompt.submit); the
-//    text is fetched from the GitHub repo at session start, baked copy as fallback.
+//    text is fetched from the GitHub repo at session start, baked copy as fallback. When the fetch fails,
+//    a RULES BROKEN box pops at session start and the readout carries the RULES BROKEN lines.
 //    (prompt.compose and prompt.context are blocked for mods by the default security plugin; tested 2026-11-04.)
+// 6. Shortcuts (whole message only): "CC" or "Context" gets the readout alone; "CC TEST" pops the 60 percent
+//    box once and nothing else. A mod's only way to write in chat without a Claude turn is a plain notice,
+//    which cannot carry the bold line and forced blank lines, so "CC" goes to Claude with the readout
+//    already written and the order to reply with it alone. "CC TEST" is answered by the mod: the box pops
+//    and the message is dropped, so no Claude turn runs.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
 
-const PLACEHOLDER_FIRE_PCT = 83
-// Chris, 2026-11-05 14:43, option 1: fixed, so a measured fire point cannot push the first warning later.
-const FIRST_TIER_PCT = 65
-const LATER_TIER_OFFSETS = [8, 3] as const
 const STORE_KEY = 'firePoints'
 
-// Chris's wording, 2026-11-04 10:21 to 10:32.
+// Chris, 2026-11-15: fixed points, no longer tied to the fire point.
+const TIER_PCTS = [60, 65, 70] as const
+
+// Chris's wording, 2026-11-15. The number is the actual percent at that moment.
 const TIER_TEXT = [
-  (p: number, fire: number) =>
-    `Context ${p} percent. WRAP UP SOON. Compaction lands around ${fire}. Start thinking about wrap up or handoff.`,
-  (p: number, fire: number) =>
-    `Context ${p} percent. I SAID WRAP UP! Dude, wrap this shit up. About ${Math.max(fire - p, 1)} points left before compaction.`,
-  (p: number) =>
-    `Context ${p} percent. WRAP UP NOW!! Compaction fires any moment now. Why the fuck haven't you wrapped up? Say handoff or wrap up NOW.`,
+  (p: number) => `CONTEXT: ${p}% - Wrap up soon.`,
+  (p: number) => `CONTEXT: ${p}% - I said wrap up!`,
+  (p: number) => `CONTEXT: ${p}% - WRAP THE FUCK UP!!`,
 ] as const
+
+const TIER_BUTTON = 'OK, wrapping up'
 
 const COMPACTED_TEXT = (p: number) =>
   `Auto-compacted at ${p} percent. WE BLEW IT: the warnings were there and nobody wrapped up. I am dumber now. Say handoff and start a new session immediately.`
+
+const RULES_BROKEN_BOX = 'RULES BROKEN\nStart a new session or tell Claude to fix it.'
 
 const PIN_HEADER =
   'COMPACTION INSTRUCTIONS FROM THE context-guard PLUGIN: the summary MUST end with a section titled ' +
@@ -40,16 +46,19 @@ const PIN_HEADER =
   'titled "NEXT" naming the exact next action, the card or table in front of the person, and the last thing ' +
   'they said. Keep every format rule the person stated during the conversation, verbatim.\n\n'
 
+// A line holding only a non-breaking space, so the chat cannot squeeze a blank line away.
+const BLANK = ' '
+
+// Whole-message shortcuts: any capitals, trailing periods, question marks, or spaces allowed.
+const READOUT_SHORTCUT = /^\s*(cc|context)[\s.?]*$/i
+const TEST_SHORTCUT = /^\s*cc\s+test[\s.?]*$/i
+
 // Module state; a reload starts it over, which is right (fresh flags).
 let rulesText = RULES
-let rulesSource = 'baked'
+let rulesSource: 'repo' | 'baked' = 'baked'
 let lastPct: number | undefined
 let lastWindow: number | undefined
 let tiersFired = 0
-
-function tierThresholds(fire: number): number[] {
-  return [FIRST_TIER_PCT, ...LATER_TIER_OFFSETS.map(o => fire - o)]
-}
 
 async function loadRules($: EngineInterface): Promise<void> {
   try {
@@ -66,18 +75,6 @@ async function loadRules($: EngineInterface): Promise<void> {
   rulesSource = 'baked'
 }
 
-async function firePoint($: EngineInterface, window: number | undefined): Promise<number> {
-  if (!window) return PLACEHOLDER_FIRE_PCT
-  try {
-    const stored = (await $.store.get(STORE_KEY)) as Record<string, number> | undefined
-    const v = stored?.[String(window)]
-    if (typeof v === 'number' && v > 0 && v <= 100) return v
-  } catch {
-    // no store: placeholder
-  }
-  return PLACEHOLDER_FIRE_PCT
-}
-
 async function recordFirePoint($: EngineInterface, window: number | undefined, pct: number): Promise<void> {
   if (!window) return
   try {
@@ -88,32 +85,67 @@ async function recordFirePoint($: EngineInterface, window: number | undefined, p
   }
 }
 
-function askBox($: EngineInterface, text: string): void {
+function askBox($: EngineInterface, text: string, button: string): void {
   // The box is the one channel both his desktop and phone draw (tested 2026-11-04). It waits for a click;
   // the answer is not used, so a dismissal is fine too.
-  void $.ui.ask(text, ['OK, wrapping up']).catch(() => undefined)
+  void $.ui.ask(text, [button]).catch(() => undefined)
 }
 
 async function onFill($: EngineInterface, pct: number | undefined, window: number | undefined): Promise<void> {
   if (pct === undefined) return
   lastPct = pct
   lastWindow = window
-  const fire = await firePoint($, window)
-  const thresholds = tierThresholds(fire)
   // Fire every tier crossed and not yet fired, highest text last.
-  while (tiersFired < thresholds.length) {
-    const threshold = thresholds[tiersFired]
+  while (tiersFired < TIER_PCTS.length) {
+    const threshold = TIER_PCTS[tiersFired]
     const say = TIER_TEXT[tiersFired]
     if (threshold === undefined || say === undefined || pct < threshold) break
     tiersFired += 1
-    askBox($, say(pct, fire))
+    askBox($, say(pct), TIER_BUTTON)
   }
 }
+
+async function currentFill($: EngineInterface): Promise<{ pct?: number; tokens?: number; window?: number }> {
+  let pct = lastPct
+  let tokens: number | undefined
+  let window = lastWindow
+  try {
+    const u = await $.session.usage()
+    pct = u.context.percent ?? pct
+    tokens = u.context.tokens
+    window = u.context.window ?? window
+  } catch {
+    // report what the last push gave
+  }
+  return { pct, tokens, window }
+}
+
+// The readout, exactly as Chris set it (2026-11-15): two blank lines, the CONTEXT line with only
+// "CONTEXT: NN%" in bold, then two blank lines; when the rules did not load from GitHub, one blank line and
+// the two italic RULES BROKEN lines go before the closing blank lines. Each blank line is a paragraph
+// holding a non-breaking space; the two italic lines are joined by a hard line break.
+async function readout($: EngineInterface): Promise<string> {
+  const { pct, tokens, window } = await currentFill($)
+  const line = `**CONTEXT: ${pct ?? '?'}%** (${tokens ?? '?'} of ${window ?? '?'} tokens)`
+  const parts: string[] = [BLANK, BLANK, line]
+  if (rulesSource !== 'repo') {
+    parts.push(BLANK, '*RULES BROKEN*\\\n*Start a new session or tell Claude to fix it.*')
+  }
+  parts.push(BLANK, BLANK)
+  return parts.join('\n\n')
+}
+
+const SHORTCUT_ORDER =
+  'CONTEXT-GUARD SHORTCUT: the message above is the readout shortcut. Reply with exactly the text between ' +
+  'the BEGIN and END marker lines below, character for character (keep every line that holds only a ' +
+  'non-breaking space, the bold, the italics, and the backslash line break), with nothing before or after it ' +
+  'and no tool calls. Do not include the marker lines.\n'
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadRules($)
     tiersFired = 0
+    if (rulesSource !== 'repo') askBox($, RULES_BROKEN_BOX, 'OK')
     // Deferred (2026-11-06): a tool kept in front is not announced to the model when the mod attaches after
     // the conversation started (the 11-06 mid-session attach), while deferred tools are listed and loaded
     // with ToolSearch. The register call is guarded so a rejection can never skip next(e).
@@ -121,7 +153,7 @@ export const register: Register = on => {
       await $.tool.register({
         name: 'context_fill',
         description:
-          'Answers how full the context window is right now (percent, tokens, window, the measured or assumed auto-compaction fire point). Call it only when Chris asks where context is at; load it with ToolSearch first.',
+          'Answers how full the context window is right now, as a ready-made readout. Call it only when Chris asks where context is at; load it with ToolSearch first. Show its result exactly as returned, with nothing added.',
         inputSchema: { type: 'object', properties: {} },
         isDeferred: true,
       })
@@ -145,32 +177,24 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The standing rules ride beside every message Chris types.
+  // The standing rules ride beside every message Chris types; the shortcuts are read here too.
   on('prompt.submit', async ($, e, next) => {
     if (e.command || e.isMeta) return next(e)
-    return next({ ...e, context: [...(e.context ?? []), rulesText] })
+    if (TEST_SHORTCUT.test(e.text)) {
+      const { pct } = await currentFill($)
+      askBox($, TIER_TEXT[0](pct ?? TIER_PCTS[0]), TIER_BUTTON)
+      return { drop: 'CC TEST' }
+    }
+    const context = [...(e.context ?? []), rulesText]
+    if (READOUT_SHORTCUT.test(e.text)) {
+      context.push(`${SHORTCUT_ORDER}BEGIN\n${await readout($)}\nEND`)
+    }
+    return next({ ...e, context })
   })
 
   // The model's tool for "what's my context at".
   on('tool.call', { tool: 'mcp__context-guard__context_fill' }, async $ => {
-    let pct = lastPct
-    let tokens: number | undefined
-    let window = lastWindow
-    try {
-      const u = await $.session.usage()
-      pct = u.context.percent ?? pct
-      tokens = u.context.tokens
-      window = u.context.window ?? window
-    } catch {
-      // report what the last push gave
-    }
-    const fire = await firePoint($, window)
-    const measured = fire !== PLACEHOLDER_FIRE_PCT
-    const text =
-      `Context: ${pct ?? '?'}% (${tokens ?? '?'} of ${window ?? '?'} tokens). ` +
-      `Auto-compaction fire point: ${fire}% (${measured ? 'measured' : 'assumed, not yet measured'}). ` +
-      `Warning tiers: ${tierThresholds(fire).join(' / ')}. Rules source: ${rulesSource}.`
-    return { result: text }
+    return { result: await readout($) }
   })
 
   // Whatever triggers a compaction, the summarizer is told to keep the rules and the NEXT pointer.
@@ -182,7 +206,7 @@ export const register: Register = on => {
     const pct = lastPct
     if (e.trigger === 'auto' && pct !== undefined) {
       await recordFirePoint($, lastWindow, pct)
-      askBox($, COMPACTED_TEXT(pct))
+      askBox($, COMPACTED_TEXT(pct), TIER_BUTTON)
     }
     tiersFired = 0
     return result

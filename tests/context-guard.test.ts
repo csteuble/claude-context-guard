@@ -14,9 +14,17 @@ const measure = (percent: number, window = 200_000) => ({
   changed: ['context' as const],
 })
 
+const NBSP = ' '
+const READOUT_8 = `${NBSP}\n\n${NBSP}\n\n**CONTEXT: 8%** (16000 of 200000 tokens)\n\n${NBSP}\n\n${NBSP}`
+const READOUT_8_BROKEN =
+  `${NBSP}\n\n${NBSP}\n\n**CONTEXT: 8%** (16000 of 200000 tokens)\n\n${NBSP}\n\n` +
+  `*RULES BROKEN*\\\n*Start a new session or tell Claude to fix it.*\n\n${NBSP}\n\n${NBSP}`
+
 function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean } = {}) {
   const asked: string[] = []
+  const buttons: string[][] = []
   const registered: Array<Record<string, unknown>> = []
+  const entered: Array<{ text: string; context?: readonly string[] }> = []
   const store: Record<string, unknown> = opts.stored ? { firePoints: opts.stored } : {}
   on('http.fetch', () => ({
     value: opts.fetchOk
@@ -34,11 +42,14 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     return { value: { tool: 'mcp__context-guard__context_fill' } }
   })
   on('session.usage', () => usage(opts.usagePct ?? 10))
-  // $.ui.ask is a tool.call of AskUserQuestion under the hood; answer it as the engine would.
+  // $.ui.ask is a tool.call of AskUserQuestion under the hood; answer it as the engine would. The dialog takes
+  // 2 to 4 options, so the engine adds a "Yes" after a single label; the tests check the mod's own label.
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
-    const q = (e as { questions?: Array<{ question: string }> }).questions?.[0]?.question ?? ''
+    const first = (e as { questions?: Array<{ question: string; options?: Array<{ label: string }> }> }).questions?.[0]
+    const q = first?.question ?? ''
     asked.push(q)
-    return { result: { questions: [], answers: { [q]: 'OK, wrapping up' } } }
+    buttons.push((first?.options ?? []).map(o => o.label))
+    return { result: { questions: [], answers: { [q]: 'OK' } } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.measure', (_, e) => e)
@@ -46,122 +57,169 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     opts.onCompact?.(e.instructions)
     return { messages: e.messages }
   })
-  on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
-  return { asked, store, registered }
+  on('prompt.submit', (_, e) => {
+    entered.push({ text: e.text, context: e.context })
+    return { text: e.text, context: e.context }
+  })
+  return { asked, buttons, store, registered, entered }
 }
 
-test('three tiers fire once each at 65 / 75 / 80 on the placeholder fire point, in order', async ($, on) => {
-  const h = harness(on)
+test('three warnings fire once each at 60 / 65 / 70 with the actual percent, in order', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   expect(h.asked.length).toBe(0)
 
-  await $.session.measure(measure(64))
+  await $.session.measure(measure(59))
   expect(h.asked.length).toBe(0)
+  await $.session.measure(measure(61))
+  expect(h.asked).toEqual(['CONTEXT: 61% - Wrap up soon.'])
+  await $.session.measure(measure(62))
+  expect(h.asked.length).toBe(1)
   await $.session.measure(measure(65))
-  expect(h.asked.length).toBe(1)
-  expect(h.asked[0]).toContain('WRAP UP SOON')
+  expect(h.asked[1]).toBe('CONTEXT: 65% - I said wrap up!')
   await $.session.measure(measure(70))
-  expect(h.asked.length).toBe(1)
-  await $.session.measure(measure(75))
-  expect(h.asked.length).toBe(2)
-  expect(h.asked[1]).toContain('I SAID WRAP UP!')
-  await $.session.measure(measure(81))
-  expect(h.asked.length).toBe(3)
-  expect(h.asked[2]).toContain('WRAP UP NOW!!')
+  expect(h.asked[2]).toBe('CONTEXT: 70% - WRAP THE FUCK UP!!')
   await $.session.measure(measure(82))
   expect(h.asked.length).toBe(3)
 })
 
-test('a jump past several tiers fires each of them', async ($, on) => {
-  const h = harness(on)
+test('the warning box keeps its button', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.session.measure(measure(79))
+  await $.session.measure(measure(60))
+  expect(h.buttons[0][0]).toBe('OK, wrapping up')
+})
+
+test('a jump past several warnings fires each of them', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(67))
   expect(h.asked.length).toBe(2)
   await $.session.measure(measure(90))
   expect(h.asked.length).toBe(3)
 })
 
-test('an auto-compaction records the fire point, scolds, pins the rules, and re-arms the tiers', async ($, on) => {
+test('a stored fire point does not move the warnings', async ($, on) => {
+  const h = harness(on, { stored: { '200000': 96 }, fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(60))
+  await $.session.measure(measure(65))
+  await $.session.measure(measure(70))
+  expect(h.asked.length).toBe(3)
+})
+
+test('an auto-compaction records the fire point, scolds as before, pins the rules, and re-arms the warnings', async ($, on) => {
   let seen: string | undefined
-  const h = harness(on, { onCompact: i => { seen = i } })
+  const h = harness(on, { fetchOk: true, onCompact: i => { seen = i } })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.session.measure(measure(81))
   expect(h.asked.length).toBe(3)
 
   await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
   expect(seen).toContain('STANDING RULES (kept through compaction)')
-  expect(seen).toContain('TLDR line first')
+  expect(seen).toContain('STANDING RULES FROM THE REPO')
   expect(h.asked.length).toBe(4)
-  expect(h.asked[3]).toContain('Auto-compacted at 81 percent')
+  expect(h.asked[3]).toBe(
+    'Auto-compacted at 81 percent. WE BLEW IT: the warnings were there and nobody wrapped up. I am dumber now. Say handoff and start a new session immediately.',
+  )
+  expect(h.buttons[3][0]).toBe('OK, wrapping up')
   expect((h.store.firePoints as Record<string, number>)['200000']).toBe(81)
 
-  // After the compaction the fill drops and the tiers can fire again, now off the measured 81.
   await $.session.measure(measure(20))
-  await $.session.measure(measure(66))
+  await $.session.measure(measure(60))
   expect(h.asked.length).toBe(5)
-  expect(h.asked[4]).toContain('Context 66 percent')
+  expect(h.asked[4]).toBe('CONTEXT: 60% - Wrap up soon.')
 })
 
 test('a manual compaction pins the rules but records nothing and does not scold', async ($, on) => {
-  const h = harness(on)
+  const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.session.measure(measure(70))
+  await $.session.measure(measure(62))
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
   expect(h.asked.length).toBe(1)
   expect(h.store.firePoints).toBe(undefined)
 })
 
-test('a stored fire point moves tiers 2 and 3, and the first stays at 65', async ($, on) => {
-  const h = harness(on, { stored: { '200000': 96 } })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.session.measure(measure(64))
-  expect(h.asked.length).toBe(0)
-  await $.session.measure(measure(65))
-  expect(h.asked.length).toBe(1)
-  await $.session.measure(measure(87))
-  expect(h.asked.length).toBe(1)
-  await $.session.measure(measure(88))
-  expect(h.asked.length).toBe(2)
-  await $.session.measure(measure(93))
-  expect(h.asked.length).toBe(3)
-})
-
-test('the rules ride beside a typed prompt, from the repo when the fetch works, else baked', async ($, on) => {
-  harness(on, { fetchOk: true })
+test('the rules ride beside a typed prompt, from the repo when the fetch works', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const r = await $.prompt.submit({ text: 'hello' })
   expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
+  expect(r.context?.length).toBe(1)
+  expect(h.asked.length).toBe(0)
 })
 
-test('the baked rules ride when the fetch fails', async ($, on) => {
-  harness(on, { fetchOk: false })
+test('when the fetch fails: baked rules ride, and a RULES BROKEN box with one OK button pops at session start', async ($, on) => {
+  const h = harness(on, { fetchOk: false })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(h.asked).toEqual(['RULES BROKEN\nStart a new session or tell Claude to fix it.'])
+  expect(h.buttons[0][0]).toBe('OK')
   const r = await $.prompt.submit({ text: 'hello' })
   expect(r.context?.[0]).toContain('TLDR line first')
 })
 
-test('the context_fill tool answers with percent, fire point and tiers', async ($, on) => {
-  harness(on, { usagePct: 42 })
+test('the context_fill tool answers with the readout alone', async ($, on) => {
+  harness(on, { usagePct: 8, fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const r = await $.tool.call({ tool: 'mcp__context-guard__context_fill' })
-  expect(String(r.result)).toContain('Context: 42%')
-  expect(String(r.result)).toContain('fire point: 83% (assumed')
-  expect(String(r.result)).toContain('65 / 75 / 80')
+  expect(String(r.result)).toBe(READOUT_8)
+})
+
+test('the readout carries the RULES BROKEN lines when the rules did not load from GitHub', async ($, on) => {
+  harness(on, { usagePct: 8, fetchOk: false })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.tool.call({ tool: 'mcp__context-guard__context_fill' })
+  expect(String(r.result)).toBe(READOUT_8_BROKEN)
+})
+
+test('"CC" and "Context" as the whole message carry the readout and the reply-with-only-this order', async ($, on) => {
+  harness(on, { usagePct: 8, fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const text of ['CC', 'cc.', 'Context', 'CONTEXT?', '  context.  ', 'Cc ?']) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(2)
+    expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
+    expect(r.context?.[1]).toContain('CONTEXT-GUARD SHORTCUT')
+    expect(r.context?.[1]).toContain(`BEGIN\n${READOUT_8}\nEND`)
+  }
+})
+
+test('"CC" or "Context" inside a longer message means nothing special', async ($, on) => {
+  harness(on, { usagePct: 8, fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const text of ['CC the team on this', 'what context is this', 'Context: the 2006 engine', 'CC TEST the build']) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(1)
+  }
+})
+
+test('"CC TEST" pops the 60 percent box once with the current percent, and nothing reaches Claude', async ($, on) => {
+  const h = harness(on, { usagePct: 8, fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.prompt.submit({ text: 'cc test.' })
+  expect(r.drop).toBe('CC TEST')
+  expect(h.entered.length).toBe(0)
+  expect(h.asked).toEqual(['CONTEXT: 8% - Wrap up soon.'])
+  expect(h.buttons[0][0]).toBe('OK, wrapping up')
+  // The test does not use up the real 60 percent warning.
+  await $.session.measure(measure(60))
+  expect(h.asked.length).toBe(2)
+  expect(h.asked[1]).toBe('CONTEXT: 60% - Wrap up soon.')
 })
 
 test('the tool registers as deferred, so it is announced when the mod attaches mid-conversation', async ($, on) => {
-  const h = harness(on)
+  const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   expect(h.registered.length).toBe(1)
   expect(h.registered[0].name).toBe('context_fill')
   expect(h.registered[0].isDeferred).toBe(true)
 })
 
-test('a refused tool registration does not stop session start: the rules still ride and the tiers still fire', async ($, on) => {
+test('a refused tool registration does not stop session start: the rules still ride and the warnings still fire', async ($, on) => {
   const h = harness(on, { registerThrows: true, fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const r = await $.prompt.submit({ text: 'hello' })
   expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
-  await $.session.measure(measure(65))
+  await $.session.measure(measure(60))
   expect(h.asked.length).toBe(1)
 })
