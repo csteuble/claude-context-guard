@@ -15,7 +15,7 @@ What it does:
 5. **Standing rules ride beside every message Chris types** (`prompt.submit` context, about 600 tokens). This replaces the 30-minute rules-reload timer. The text comes from `Standing Rules.md` in this repo, fetched at every session start; `hooks/rules.ts` holds a baked fallback for when the fetch fails. `prompt.compose` and `prompt.context` are blocked for mods by the default security plugin, so they are not used. When the fetch fails, a box pops at session start: `RULES BROKEN` / `Start a new session or tell Claude to fix it.`, buttons `Got it` / `Thanks`.
 6. **Shortcuts**, read only when they are the whole message (any capitals; trailing periods, question marks, and spaces allowed):
    - `CC` or `Context`: the reply is the readout alone. A mod's only way to write in chat without a Claude turn is a plain notice, which cannot carry the bold line or the forced blank lines, so the mod writes the readout into the message's hidden context with the order to reply with it alone, and Claude replies.
-   - `CC TEST`: the mod pops the 60 percent warning box once with the current percent and drops the message, so no Claude turn runs (the engine shows the dropped message's reason, `CC TEST`). The test does not use up the real 60 percent warning.
+   - `CC TEST`: the mod pops the 60 percent warning box once with the current percent and drops the message, so no Claude turn runs. The drop's reason is a zero-width space, so no text line shows. The test does not use up the real 60 percent warning.
 
 ## Changing the rules
 
@@ -37,7 +37,7 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Versions
 
-- 1.0.4 (2026-11-15): two buttons of Chris's on every box: warnings `Good Day to you` / `I said Good Day!`, auto-compaction `Sure fucked that up` / `Fuck fuck fuck fuck`, RULES BROKEN `Got it` / `Thanks`.
+- 1.0.4 (2026-11-15): two buttons of Chris's on every box: warnings `Good Day to you` / `I said Good Day!`, auto-compaction `Sure fucked that up` / `Fuck fuck fuck fuck`, RULES BROKEN `Got it` / `Thanks`; `CC TEST` shows no line in chat.
 - 1.0.3 (2026-11-15): warnings at fixed 60 / 65 / 70 with new text; the readout is the bold CONTEXT line between forced blank lines, with no fire point, tiers, or rules source; RULES BROKEN box and readout lines when the rules did not load from GitHub; the `CC`, `Context`, and `CC TEST` shortcuts; 15 tests.
 - 1.0.2 (2026-11-06): the tool is deferred so it is announced on a mid-conversation attach; the register call is guarded so a refusal cannot stop session start; two tests added (10 total); the marketplace entry carries the version.
 - 1.0.1 (2026-11-05): the first warning is fixed at 65 percent (Chris's ruling); tiers 2 and 3 stay at the fire point minus 8 and 3.

@@ -196,7 +196,7 @@ test('"CC TEST" pops the 60 percent box once with the current percent, and nothi
   const h = harness(on, { usagePct: 8, fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const r = await $.prompt.submit({ text: 'cc test.' })
-  expect(r.drop).toBe('CC TEST')
+  expect(r.drop).toBe('​')
   expect(h.entered.length).toBe(0)
   expect(h.asked).toEqual(['CONTEXT: 8% - Wrap up soon.'])
   expect(h.buttons[0]).toEqual(['Good Day to you', 'I said Good Day!'])

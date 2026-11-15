@@ -16,7 +16,7 @@
 //    box once and nothing else. A mod's only way to write in chat without a Claude turn is a plain notice,
 //    which cannot carry the bold line and forced blank lines, so "CC" goes to Claude with the readout
 //    already written and the order to reply with it alone. "CC TEST" is answered by the mod: the box pops
-//    and the message is dropped, so no Claude turn runs.
+//    and the message is dropped, so no Claude turn runs and no line is shown.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
