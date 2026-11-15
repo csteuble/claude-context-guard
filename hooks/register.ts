@@ -186,7 +186,9 @@ export const register: Register = on => {
     if (TEST_SHORTCUT.test(e.text)) {
       const { pct } = await currentFill($)
       askBox($, TIER_TEXT[0](pct ?? TIER_PCTS[0]), TIER_BUTTONS)
-      return { drop: 'CC TEST' }
+      // Chris, 2026-11-15: no "CC TEST" line in chat. The engine shows a drop's reason, so the reason is a
+      // zero-width space (a drop needs a non-empty reason).
+      return { drop: '​' }
     }
     const context = [...(e.context ?? []), rulesText]
     if (READOUT_SHORTCUT.test(e.text)) {
