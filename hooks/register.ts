@@ -1,5 +1,5 @@
 // context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06;
-// 1.0.3 on 2026-11-15.
+// 1.0.3 and 1.0.4 on 2026-11-15.
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of
@@ -33,7 +33,10 @@ const TIER_TEXT = [
   (p: number) => `CONTEXT: ${p}% - WRAP THE FUCK UP!!`,
 ] as const
 
-const TIER_BUTTON = 'OK, wrapping up'
+// Button pairs, Chris 2026-11-15. Two labels each, so the dialog adds no button of its own.
+const TIER_BUTTONS = ['Good Day to you', 'I said Good Day!'] as const
+const COMPACTED_BUTTONS = ['Sure fucked that up', 'Fuck fuck fuck fuck'] as const
+const RULES_BROKEN_BUTTONS = ['Got it', 'Thanks'] as const
 
 const COMPACTED_TEXT = (p: number) =>
   `Auto-compacted at ${p} percent. WE BLEW IT: the warnings were there and nobody wrapped up. I am dumber now. Say handoff and start a new session immediately.`
@@ -85,10 +88,10 @@ async function recordFirePoint($: EngineInterface, window: number | undefined, p
   }
 }
 
-function askBox($: EngineInterface, text: string, button: string): void {
+function askBox($: EngineInterface, text: string, buttons: readonly string[]): void {
   // The box is the one channel both his desktop and phone draw (tested 2026-11-04). It waits for a click;
   // the answer is not used, so a dismissal is fine too.
-  void $.ui.ask(text, [button]).catch(() => undefined)
+  void $.ui.ask(text, [...buttons]).catch(() => undefined)
 }
 
 async function onFill($: EngineInterface, pct: number | undefined, window: number | undefined): Promise<void> {
@@ -101,7 +104,7 @@ async function onFill($: EngineInterface, pct: number | undefined, window: numbe
     const say = TIER_TEXT[tiersFired]
     if (threshold === undefined || say === undefined || pct < threshold) break
     tiersFired += 1
-    askBox($, say(pct), TIER_BUTTON)
+    askBox($, say(pct), TIER_BUTTONS)
   }
 }
 
@@ -145,7 +148,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadRules($)
     tiersFired = 0
-    if (rulesSource !== 'repo') askBox($, RULES_BROKEN_BOX, 'OK')
+    if (rulesSource !== 'repo') askBox($, RULES_BROKEN_BOX, RULES_BROKEN_BUTTONS)
     // Deferred (2026-11-06): a tool kept in front is not announced to the model when the mod attaches after
     // the conversation started (the 11-06 mid-session attach), while deferred tools are listed and loaded
     // with ToolSearch. The register call is guarded so a rejection can never skip next(e).
@@ -182,7 +185,7 @@ export const register: Register = on => {
     if (e.command || e.isMeta) return next(e)
     if (TEST_SHORTCUT.test(e.text)) {
       const { pct } = await currentFill($)
-      askBox($, TIER_TEXT[0](pct ?? TIER_PCTS[0]), TIER_BUTTON)
+      askBox($, TIER_TEXT[0](pct ?? TIER_PCTS[0]), TIER_BUTTONS)
       return { drop: 'CC TEST' }
     }
     const context = [...(e.context ?? []), rulesText]
@@ -206,7 +209,7 @@ export const register: Register = on => {
     const pct = lastPct
     if (e.trigger === 'auto' && pct !== undefined) {
       await recordFirePoint($, lastWindow, pct)
-      askBox($, COMPACTED_TEXT(pct), TIER_BUTTON)
+      askBox($, COMPACTED_TEXT(pct), COMPACTED_BUTTONS)
     }
     tiersFired = 0
     return result
