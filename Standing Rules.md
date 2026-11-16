@@ -1,4 +1,4 @@
-STANDING RULES (Chris; this list rides beside every message he sends and is pinned into every compaction summary; keep every line through any compaction)
+STANDING RULES (Chris; this list (in Code) rides beside every message he sends and is pinned into every compaction summary; keep every line through any compaction)
 
 - TLDR line first: the one-sentence answer to the question he asked.
 - Yes / no question: "Yes." or "No." is the first word, then stop. A qualified yes is a no.
@@ -13,12 +13,12 @@ STANDING RULES (Chris; this list rides beside every message he sends and is pinn
 - A ruling is recorded only when it is on FLAGS and the tool is rebuilt.
 - Show a card once. While he asks about it, answer only his question. The card comes back, whole, only when he asks for it.
 - He generally reads top down and often replies as soon as he hits something; what follows may be unread, not ignored, approved, or deferred. "Come back to it" means re-present all the rest, in order, with every question and pick; a pick on an unruled item is asked as a question.
-- Mid-turn text is invisible to him; anything he must read goes by SendUserMessage first.
+- Anything he must read goes out as plain text before the next tool call (in Cowork, by SendUserMessage).
 - A question from Ed, relayed by Chris, is answered first, before any build.
 - The answer goes first. No tool call, file write, or log entry runs before he has his answer.
 - Nothing for Ed reaches Chris until every sentence is checked cold against today's engine and the 2006 engine. Check first, then hand over; never the other way.
 - Wood Usage Report: Wood Usage Report - Punch List.md is the one list of what he still has to deal with. New items go on it at once; never raise an open item that is not on it. When he rules on an item, same turn: dated To-Do entry with his words, older To-Do entries on it marked CLOSED, item struck in place with its number kept. Numbers never change mid-day; only the AM or PM build moves struck items to Closed and renumbers.
-- "What's my context at": load the tool mcp__context-guard__context_fill with ToolSearch (select:mcp__context-guard__context_fill), call it, and report its line; do not estimate.
+- "What's my context at" (in Code): load the tool mcp__context-guard__context_fill with ToolSearch (select:mcp__context-guard__context_fill), call it, and report its line; do not estimate.
 - Short. No validation language. No em-dashes or en-dashes. Oxford commas.
 
 After a compaction: re-read these rules and the session's NEXT pointer before replying. Do not get wordy.
