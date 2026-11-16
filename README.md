@@ -37,6 +37,7 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Versions
 
+- 1.0.6 (2026-11-16): one new standing rule (reads top down; "come back to it" re-presents all the rest), added to `Standing Rules.md` and the baked copy.
 - 1.0.5 (2026-11-16): the baked fallback rules in `hooks/rules.ts` re-synced to `Standing Rules.md` word for word (it still carried the two rules replaced on 2026-11-12 and lacked the context line).
 - 1.0.4 (2026-11-15): two buttons of Chris's on every box: warnings `Good Day to you` / `I said Good Day!`, auto-compaction `Sure fucked that up` / `Fuck fuck fuck fuck`, RULES BROKEN `Got it` / `Thanks`; `CC TEST` shows no line in chat.
 - 1.0.3 (2026-11-15): warnings at fixed 60 / 65 / 70 with new text; the readout is the bold CONTEXT line between forced blank lines, with no fire point, tiers, or rules source; RULES BROKEN box and readout lines when the rules did not load from GitHub; the `CC`, `Context`, and `CC TEST` shortcuts; 15 tests.

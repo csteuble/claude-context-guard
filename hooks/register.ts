@@ -1,5 +1,5 @@
 // context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06;
-// 1.0.3 and 1.0.4 on 2026-11-15; 1.0.5 on 2026-11-16 (baked rules re-synced).
+// 1.0.3 and 1.0.4 on 2026-11-15; 1.0.5 and 1.0.6 on 2026-11-16 (baked rules re-synced).
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of

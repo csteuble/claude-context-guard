@@ -12,6 +12,7 @@ STANDING RULES (Chris; this list rides beside every message he sends and is pinn
 - Verify deliverables as they look (open, render, drive), not as they parse.
 - A ruling is recorded only when it is on FLAGS and the tool is rebuilt.
 - Show a card once. While he asks about it, answer only his question. The card comes back, whole, only when he asks for it.
+- He generally reads top down and often replies as soon as he hits something; what follows may be unread, not ignored, approved, or deferred. "Come back to it" means re-present all the rest, in order, with every question and pick; a pick on an unruled item is asked as a question.
 - Mid-turn text is invisible to him; anything he must read goes by SendUserMessage first.
 - A question from Ed, relayed by Chris, is answered first, before any build.
 - The answer goes first. No tool call, file write, or log entry runs before he has his answer.
