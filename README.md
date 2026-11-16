@@ -19,7 +19,7 @@ What it does:
 
 ## Changing the rules
 
-Edit `Standing Rules.md` on the `main` branch. Every new session picks it up at start. No reinstall. Keep the baked copy in `hooks/rules.ts` word for word in step: re-copying it is a code change (bump the version and run the delivery check).
+Never edit `Standing Rules.md` or the baked copy by hand. Since 1.0.8 the one source is the STANDING RULES section of Chris's Global Memory (`C:\HomeInnovation\000 VAULT\_System\Global Memory.md`); the vault script `Check Rules Copies.py --push "<what changed>"` writes both files from it, bumps the version, pushes to `main`, and updates the PC install. Every new session picks up `Standing Rules.md` at start; the baked copy changing makes each rules edit a code change (run the tests and the delivery check).
 
 ## Install
 
@@ -37,6 +37,7 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Versions
 
+- 1.0.8 (2026-11-16): the rules list is now generated from Chris's Global Memory (his rulings D1, C2, C3, C6, and C7): one go list on the question line, the answer-first line gains the two-read cap, and the two Wood Usage lines leave the list for the Wood Usage project.
 - 1.0.7 (2026-11-16): three standing rules lines reworded on Chris's rulings: the SendUserMessage line is now plain text before the next tool call (SendUserMessage in Cowork), and "(in Code)" in the header and the context line.
 - 1.0.6 (2026-11-16): one new standing rule (reads top down; "come back to it" re-presents all the rest), added to `Standing Rules.md` and the baked copy.
 - 1.0.5 (2026-11-16): the baked fallback rules in `hooks/rules.ts` re-synced to `Standing Rules.md` word for word (it still carried the two rules replaced on 2026-11-12 and lacked the context line).
