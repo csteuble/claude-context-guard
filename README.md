@@ -16,6 +16,7 @@ What it does:
 6. **Shortcuts**, read only when they are the whole message (any capitals; trailing periods, question marks, and spaces allowed):
    - `CC` or `Context`: the reply is the readout alone. A mod's only way to write in chat without a Claude turn is a plain notice, which cannot carry the bold line or the forced blank lines, so the mod writes the readout into the message's hidden context with the order to reply with it alone, and Claude replies.
    - `CC TEST`: the mod pops the 60 percent warning box once with the current percent and drops the message, so no Claude turn runs. The drop's reason is a zero-width space, so no text line shows. The test does not use up the real 60 percent warning.
+   - `mute` or `unmute` (no question mark): the mod runs `tools/Set Mute.ps1 on` or `off`, which SETS the PC's default playback device muted or unmuted through the Windows Core Audio API (never a toggle), then hands Claude the one-word reply, `Muted.` or `Unmuted.`, the way `CC` hands over the readout. A failed set makes the reply one line saying so. If the engine refuses the mod's `$.process.run`, Claude is handed the exact PowerShell command to run instead. Works from the phone over Remote Control, since the hook runs on the PC.
 
 ## Changing the rules
 
@@ -33,9 +34,11 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Checks
 
-`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 15 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts).
+`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 19 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
 
 ## Versions
+
+- 1.0.9 (2026-11-17): the `mute` / `unmute` shortcut and its setter `tools/Set Mute.ps1`; four tests added (19 total).
 
 - 1.0.8 (2026-11-16): the rules list is now generated from Chris's Global Memory (his rulings D1, C2, C3, C6, and C7): one go list on the question line, the answer-first line gains the two-read cap, and the two Wood Usage lines leave the list for the Wood Usage project.
 - 1.0.7 (2026-11-16): three standing rules lines reworded on Chris's rulings: the SendUserMessage line is now plain text before the next tool call (SendUserMessage in Cowork), and "(in Code)" in the header and the context line.

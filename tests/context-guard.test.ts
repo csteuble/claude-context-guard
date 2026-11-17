@@ -20,7 +20,7 @@ const READOUT_8_BROKEN =
   `${NBSP}\n\n${NBSP}\n\n**CONTEXT: 8%** (16000 of 200000 tokens)\n\n${NBSP}\n\n` +
   `*RULES BROKEN*\\\n*Start a new session or tell Claude to fix it.*\n\n${NBSP}\n\n${NBSP}`
 
-function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean } = {}) {
+function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused' } = {}) {
   const asked: string[] = []
   const buttons: string[][] = []
   const registered: Array<Record<string, unknown>> = []
@@ -42,6 +42,14 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     return { value: { tool: 'mcp__context-guard__context_fill' } }
   })
   on('session.usage', () => usage(opts.usagePct ?? 10))
+  const ran: string[][] = []
+  on('process.run', (_, e) => {
+    ran.push([...e.argv])
+    if (opts.mute === 'refused') throw new Error('process refused')
+    const state = e.argv[e.argv.length - 1]?.trim().endsWith(' on') ? 'on' : 'off'
+    const stdout = opts.mute === 'fail' ? 'FAILED: no default playback device' : state === 'on' ? 'Muted.' : 'Unmuted.'
+    return { value: { exitCode: opts.mute === 'fail' ? 1 : 0, stdout: stdout + '\r\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   // $.ui.ask is a tool.call of AskUserQuestion under the hood; answer it as the engine would.
   on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
     const first = (e as { questions?: Array<{ question: string; options?: Array<{ label: string }> }> }).questions?.[0]
@@ -60,7 +68,7 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     entered.push({ text: e.text, context: e.context })
     return { text: e.text, context: e.context }
   })
-  return { asked, buttons, store, registered, entered }
+  return { asked, buttons, store, registered, entered, ran }
 }
 
 test('three warnings fire once each at 60 / 65 / 70 with the actual percent, in order', async ($, on) => {
@@ -221,4 +229,45 @@ test('a refused tool registration does not stop session start: the rules still r
   expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
   await $.session.measure(measure(60))
   expect(h.asked.length).toBe(1)
+})
+
+test('"mute" and "unmute" as the whole message set the state and hand Claude the one-word reply', async ($, on) => {
+  const h = harness(on, { fetchOk: true, mute: 'ok' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const [text, word, state] of [['mute', 'Muted.', 'on'], ['  MUTE. ', 'Muted.', 'on'], ['Unmute', 'Unmuted.', 'off'], ['unmute.', 'Unmuted.', 'off']] as const) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(2)
+    expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
+    expect(r.context?.[1]).toContain('CONTEXT-GUARD SHORTCUT')
+    expect(r.context?.[1]).toContain(`no tool calls: ${word}`)
+    const argv = h.ran[h.ran.length - 1] ?? []
+    expect(argv[0]).toBe('powershell')
+    expect(argv[argv.length - 1]).toContain(`'tools\\Set Mute.ps1') ${state}`)
+  }
+  expect(h.ran.length).toBe(4)
+})
+
+test('"mute" inside a longer message, or as a question, means nothing special and runs nothing', async ($, on) => {
+  const h = harness(on, { fetchOk: true, mute: 'ok' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const text of ['mute the PC', 'mute?', 'unmute it', 'why is it on mute']) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(1)
+  }
+  expect(h.ran.length).toBe(0)
+})
+
+test('a failed set makes the reply one line saying so', async ($, on) => {
+  harness(on, { fetchOk: true, mute: 'fail' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.prompt.submit({ text: 'mute' })
+  expect(r.context?.[1]).toContain('no tool calls: Mute failed: FAILED: no default playback device')
+})
+
+test('when the engine refuses to run the setter, Claude is handed the exact command to run instead', async ($, on) => {
+  harness(on, { fetchOk: true, mute: 'refused' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.prompt.submit({ text: 'unmute' })
+  expect(r.context?.[1]).toContain('could not run it itself')
+  expect(r.context?.[1]).toContain("powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $p 'tools\\Set Mute.ps1') off")
 })

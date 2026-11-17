@@ -1,5 +1,6 @@
 // context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06;
-// 1.0.3 and 1.0.4 on 2026-11-15; 1.0.5 to 1.0.7 on 2026-11-16 (standing rules text).
+// 1.0.3 and 1.0.4 on 2026-11-15; 1.0.5 to 1.0.7 on 2026-11-16 (standing rules text); 1.0.8 on 2026-11-16
+// (rules list generated from Global Memory); 1.0.9 on 2026-11-17 (the "mute" / "unmute" shortcut, item 7).
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of
@@ -17,6 +18,11 @@
 //    which cannot carry the bold line and forced blank lines, so "CC" goes to Claude with the readout
 //    already written and the order to reply with it alone. "CC TEST" is answered by the mod: the box pops
 //    and the message is dropped, so no Claude turn runs and no line is shown.
+// 7. "mute" / "unmute" (whole message, Chris 2026-11-17): the mod runs tools\Set Mute.ps1 on or off, which SETS
+//    the default playback device's mute state (never a toggle), then hands Claude the one-word reply
+//    ("Muted." or "Unmuted.") the way "CC" hands over the readout; a failed set is a one-line reply saying so.
+//    The script is found through installed_plugins.json, so the hook needs no path of its own. If the
+//    engine refuses $.process.run, the order carries the exact PowerShell command for Claude to run instead.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -55,6 +61,24 @@ const BLANK = ' '
 // Whole-message shortcuts: any capitals, trailing periods, question marks, or spaces allowed.
 const READOUT_SHORTCUT = /^\s*(cc|context)[\s.?]*$/i
 const TEST_SHORTCUT = /^\s*cc\s+test[\s.?]*$/i
+// "mute" or "unmute", any capitals, surrounding spaces or trailing periods allowed (no question mark: "mute?" is a
+// question, not an order).
+const MUTE_SHORTCUT = /^\s*(un)?mute[\s.]*$/i
+
+// The setter's command, one PowerShell line with no double quotes (argv goes through Windows quoting): it finds
+// the installed mod through installed_plugins.json and runs tools\Set Mute.ps1 with on or off.
+const MUTE_SCRIPT = (state: 'on' | 'off') =>
+  "$j = Join-Path $env:USERPROFILE '.claude\\plugins\\installed_plugins.json'; " +
+  "$p = (Get-Content -Raw $j | ConvertFrom-Json).plugins.'context-guard@claude-context-guard'[0].installPath; " +
+  `& (Join-Path $p 'tools\\Set Mute.ps1') ${state}`
+const MUTE_ARGV = (state: 'on' | 'off') => [
+  'powershell',
+  '-NoProfile',
+  '-ExecutionPolicy',
+  'Bypass',
+  '-Command',
+  MUTE_SCRIPT(state),
+]
 
 // Module state; a reload starts it over, which is right (fresh flags).
 let rulesText = RULES
@@ -144,6 +168,31 @@ const SHORTCUT_ORDER =
   'non-breaking space, the bold, the italics, and the backslash line break), with nothing before or after it ' +
   'and no tool calls. Do not include the marker lines.\n'
 
+const MUTE_ORDER = (reply: string) =>
+  'CONTEXT-GUARD SHORTCUT: the message above is the mute shortcut; the mod has already run it. Reply with ' +
+  `exactly this line and nothing else, no tool calls: ${reply}`
+
+const MUTE_FALLBACK_ORDER = (state: 'on' | 'off') =>
+  'CONTEXT-GUARD SHORTCUT: the message above is the mute shortcut, and the mod could not run it itself. Run ' +
+  'this exact command with your PowerShell tool, then reply with exactly the line it prints and nothing else ' +
+  `("${state === 'on' ? 'Muted.' : 'Unmuted.'}" when it worked; when it prints FAILED, one line saying the ` +
+  `mute did not work and why):\n${MUTE_SCRIPT(state).replace('& (Join-Path', 'powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path')}`
+
+// Runs the setter; answers the hidden-context order for Claude.
+async function muteOrder($: EngineInterface, state: 'on' | 'off'): Promise<string> {
+  const want = state === 'on' ? 'Muted.' : 'Unmuted.'
+  let r: { exitCode: number; stdout: string; stderr: string }
+  try {
+    r = await $.process.run(MUTE_ARGV(state), { timeoutMs: 30_000 })
+  } catch {
+    return MUTE_FALLBACK_ORDER(state)
+  }
+  const out = r.stdout.trim()
+  if (r.exitCode === 0 && out === want) return MUTE_ORDER(want)
+  const why = (out || r.stderr.trim() || `exit code ${r.exitCode}`).replace(/\s+/g, ' ').slice(0, 200)
+  return MUTE_ORDER(`${state === 'on' ? 'Mute' : 'Unmute'} failed: ${why}`)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadRules($)
@@ -193,6 +242,10 @@ export const register: Register = on => {
     const context = [...(e.context ?? []), rulesText]
     if (READOUT_SHORTCUT.test(e.text)) {
       context.push(`${SHORTCUT_ORDER}BEGIN\n${await readout($)}\nEND`)
+    }
+    const mute = MUTE_SHORTCUT.exec(e.text)
+    if (mute) {
+      context.push(await muteOrder($, mute[1] ? 'off' : 'on'))
     }
     return next({ ...e, context })
   })
