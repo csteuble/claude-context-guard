@@ -152,8 +152,23 @@ test('the rules ride beside a typed prompt, from the repo when the fetch works',
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const r = await $.prompt.submit({ text: 'hello' })
   expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
-  expect(r.context?.length).toBe(1)
+  expect(r.context?.length).toBe(2)
+  expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
   expect(h.asked.length).toBe(0)
+})
+
+test('the no-go line rides only when the message holds no go word and is not a bare option number', async ($, on) => {
+  harness(on, { fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const text of ['Thoughts?', 'I want the e2 ultra', 'can you check the log', 'going to lunch']) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(2)
+    expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
+  }
+  for (const text of ['go', 'Execute', 'do it', 'fix it please', 'change it', 'build it out', 'write it', '1', ' 2. ', 'Okay, go ahead']) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(1)
+  }
 })
 
 test('when the fetch fails: baked rules ride, and a RULES BROKEN box with Got it / Thanks pops at session start', async ($, on) => {
@@ -196,7 +211,7 @@ test('"CC" or "Context" inside a longer message means nothing special', async ($
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   for (const text of ['CC the team on this', 'what context is this', 'Context: the 2006 engine', 'CC TEST the build']) {
     const r = await $.prompt.submit({ text })
-    expect(r.context?.length).toBe(1)
+    expect((r.context ?? []).some(c => c.includes('CONTEXT-GUARD SHORTCUT'))).toBe(false)
   }
 })
 
@@ -252,7 +267,7 @@ test('"mute" inside a longer message, or as a question, means nothing special an
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   for (const text of ['mute the PC', 'mute?', 'unmute it', 'why is it on mute']) {
     const r = await $.prompt.submit({ text })
-    expect(r.context?.length).toBe(1)
+    expect((r.context ?? []).some(c => c.includes('CONTEXT-GUARD SHORTCUT'))).toBe(false)
   }
   expect(h.ran.length).toBe(0)
 })

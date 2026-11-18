@@ -23,6 +23,8 @@
 //    ("Muted." or "Unmuted.") the way "CC" hands over the readout; a failed set is a one-line reply saying so.
 //    The script is found through installed_plugins.json, so the hook needs no path of its own. If the
 //    engine refuses $.process.run, the order carries the exact PowerShell command for Claude to run instead.
+// 8. No-go line (Chris 2026-11-18, failure-log card 3, Option 1): when a message holds none of his go words
+//    and is not a bare option number, one line rides beside it saying so. It nudges; it blocks nothing.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -64,6 +66,15 @@ const TEST_SHORTCUT = /^\s*cc\s+test[\s.?]*$/i
 // "mute" or "unmute", any capitals, surrounding spaces or trailing periods allowed (no question mark: "mute?" is a
 // question, not an order).
 const MUTE_SHORTCUT = /^\s*(un)?mute[\s.]*$/i
+
+// His go list (Global Memory, ACT-ONLY-ON-GO gate G1): "execute", "go", "do it", "fix it", "change it", "build",
+// "write it", or a bare option number on a presented card.
+const GO_WORDS = /\b(execute|go|do it|fix it|change it|build|write it)\b/i
+const BARE_NUMBER = /^\s*\d+[\s.!]*$/
+export const NO_GO_LINE = 'NO GO IN THIS MESSAGE: answer, record, or show only.'
+export function hasGo(text: string): boolean {
+  return GO_WORDS.test(text) || BARE_NUMBER.test(text)
+}
 
 // The setter's command, one PowerShell line with no double quotes (argv goes through Windows quoting): it finds
 // the installed mod through installed_plugins.json and runs tools\Set Mute.ps1 with on or off.
@@ -240,6 +251,8 @@ export const register: Register = on => {
       return { drop: '​' }
     }
     const context = [...(e.context ?? []), rulesText]
+    const isShortcut = READOUT_SHORTCUT.test(e.text) || MUTE_SHORTCUT.test(e.text)
+    if (!isShortcut && !hasGo(e.text)) context.push(NO_GO_LINE)
     if (READOUT_SHORTCUT.test(e.text)) {
       context.push(`${SHORTCUT_ORDER}BEGIN\n${await readout($)}\nEND`)
     }
