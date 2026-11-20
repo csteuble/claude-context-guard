@@ -25,6 +25,10 @@
 //    engine refuses $.process.run, the order carries the exact PowerShell command for Claude to run instead.
 // 8. No-go line (Chris 2026-11-18, failure-log card 3, Option 1): when a message holds none of his go words
 //    and is not a bare option number, one line rides beside it saying so. It nudges; it blocks nothing.
+// 9. Context line (Chris 2026-11-20, 1.0.13): every reply opens with one line the mod hands over beside each
+//    message he types: "Context 47% ▓▓▓▓░░░░░░" below 60 percent, and from 60, 65, and 70 percent the bold
+//    warning line with signs, e.g. "⚠️ **Context 71% ▓▓▓▓▓▓▓░░░ Fucking wrap up!** ⚠️". Not on the "CC" and
+//    "mute" shortcuts, whose replies are exact text.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -40,6 +44,24 @@ const TIER_TEXT = [
   (p: number) => `CONTEXT: ${p}% - I said wrap up!`,
   (p: number) => `CONTEXT: ${p}% - WRAP THE FUCK UP!!`,
 ] as const
+
+// The context line that opens every reply (Chris 2026-11-20): his words for each tier, sentence case, one
+// exclamation mark; a 10-block bar, one block per full 10 percent.
+const CONTEXT_LINE_TEXT = ['Wrap up soon.', 'I said wrap up!', 'Fucking wrap up!'] as const
+export function contextLine(pct: number): string {
+  const p = Math.round(pct)
+  const filled = Math.min(10, Math.max(0, Math.floor(p / 10)))
+  const bar = '▓'.repeat(filled) + '░'.repeat(10 - filled)
+  let tier = -1
+  TIER_PCTS.forEach((t, i) => {
+    if (p >= t) tier = i
+  })
+  const say = CONTEXT_LINE_TEXT[tier]
+  return say === undefined ? `Context ${p}% ${bar}` : `⚠️ **Context ${p}% ${bar} ${say}** ⚠️`
+}
+const CONTEXT_LINE_ORDER = (line: string) =>
+  'CONTEXT LINE (context-guard): make this exact line, character for character, the very first line of your ' +
+  'reply, then a blank line, then the TLDR line; one context line per reply, never repeated: ' + line
 
 // Button pairs, Chris 2026-11-15. Two labels each, so the dialog adds no button of its own.
 const TIER_BUTTONS = ['Good Day to you', 'I said Good Day!'] as const
@@ -259,6 +281,10 @@ export const register: Register = on => {
     const mute = MUTE_SHORTCUT.exec(e.text)
     if (mute) {
       context.push(await muteOrder($, mute[1] ? 'off' : 'on'))
+    }
+    if (!isShortcut) {
+      const { pct } = await currentFill($)
+      if (pct !== undefined) context.push(CONTEXT_LINE_ORDER(contextLine(pct)))
     }
     return next({ ...e, context })
   })

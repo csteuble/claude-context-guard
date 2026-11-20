@@ -152,8 +152,9 @@ test('the rules ride beside a typed prompt, from the repo when the fetch works',
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const r = await $.prompt.submit({ text: 'hello' })
   expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
-  expect(r.context?.length).toBe(2)
+  expect(r.context?.length).toBe(3)
   expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
+  expect(r.context?.[2]).toContain('CONTEXT LINE (context-guard)')
   expect(h.asked.length).toBe(0)
 })
 
@@ -162,12 +163,13 @@ test('the no-go line rides only when the message holds no go word and is not a b
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   for (const text of ['Thoughts?', 'I want the e2 ultra', 'can you check the log', 'going to lunch']) {
     const r = await $.prompt.submit({ text })
-    expect(r.context?.length).toBe(2)
+    expect(r.context?.length).toBe(3)
     expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
   }
   for (const text of ['go', 'Execute', 'do it', 'fix it please', 'change it', 'build it out', 'write it', '1', ' 2. ', 'Okay, go ahead']) {
     const r = await $.prompt.submit({ text })
-    expect(r.context?.length).toBe(1)
+    expect(r.context?.length).toBe(2)
+    expect(r.context?.[1]).toContain('CONTEXT LINE (context-guard)')
   }
 })
 
@@ -177,7 +179,7 @@ test('when the fetch fails: baked rules ride, and a RULES BROKEN box with Got it
   expect(h.asked).toEqual(['RULES BROKEN\nStart a new session or tell Claude to fix it.'])
   expect(h.buttons[0]).toEqual(['Got it', 'Thanks'])
   const r = await $.prompt.submit({ text: 'hello' })
-  expect(r.context?.[0]).toContain('TLDR line first')
+  expect(r.context?.[0]).toContain('then the TLDR line')
 })
 
 test('the context_fill tool answers with the readout alone', async ($, on) => {
@@ -285,4 +287,31 @@ test('when the engine refuses to run the setter, Claude is handed the exact comm
   const r = await $.prompt.submit({ text: 'unmute' })
   expect(r.context?.[1]).toContain('could not run it itself')
   expect(r.context?.[1]).toContain("powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $p 'tools\\Set Mute.ps1') off")
+})
+
+for (const [pct, line] of [
+  [10, 'Context 10% ▓░░░░░░░░░'],
+  [47, 'Context 47% ▓▓▓▓░░░░░░'],
+  [59, 'Context 59% ▓▓▓▓▓░░░░░'],
+  [61, '⚠️ **Context 61% ▓▓▓▓▓▓░░░░ Wrap up soon.** ⚠️'],
+  [66, '⚠️ **Context 66% ▓▓▓▓▓▓░░░░ I said wrap up!** ⚠️'],
+  [71, '⚠️ **Context 71% ▓▓▓▓▓▓▓░░░ Fucking wrap up!** ⚠️'],
+  [100, '⚠️ **Context 100% ▓▓▓▓▓▓▓▓▓▓ Fucking wrap up!** ⚠️'],
+] as const) {
+  test(`a typed message at ${pct} percent carries the context line order: ${line}`, async ($, on) => {
+    harness(on, { usagePct: pct, fetchOk: true })
+    await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+    const r = await $.prompt.submit({ text: 'go' })
+    const order = (r.context ?? []).find(c => c.startsWith('CONTEXT LINE (context-guard)')) ?? ''
+    expect(order.endsWith(': ' + line)).toBe(true)
+  })
+}
+
+test('the CC and mute shortcuts carry no context line order', async ($, on) => {
+  harness(on, { usagePct: 61, fetchOk: true, mute: 'ok' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const text of ['CC', 'mute', 'unmute']) {
+    const r = await $.prompt.submit({ text })
+    expect((r.context ?? []).some(c => c.startsWith('CONTEXT LINE'))).toBe(false)
+  }
 })
