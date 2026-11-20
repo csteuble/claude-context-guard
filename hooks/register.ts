@@ -1,6 +1,7 @@
 // context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06;
 // 1.0.3 and 1.0.4 on 2026-11-15; 1.0.5 to 1.0.7 on 2026-11-16 (standing rules text); 1.0.8 on 2026-11-16
-// (rules list generated from Global Memory); 1.0.9 on 2026-11-17 (the "mute" / "unmute" shortcut, item 7).
+// (rules list generated from Global Memory); 1.0.9 on 2026-11-17 (the "mute" / "unmute" shortcut, item 7);
+// 1.0.12 on 2026-11-18 (no-go line, item 8); 1.0.13 and 1.0.14 on 2026-11-20 (context line, item 9).
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of
@@ -28,7 +29,8 @@
 // 9. Context line (Chris 2026-11-20, 1.0.13): every reply opens with one line the mod hands over beside each
 //    message he types: "Context 47% ▓▓▓▓░░░░░░" below 60 percent, and from 60, 65, and 70 percent the bold
 //    warning line with signs, e.g. "⚠️ **Context 71% ▓▓▓▓▓▓▓░░░ Fucking wrap up!** ⚠️". Not on the "CC" and
-//    "mute" shortcuts, whose replies are exact text.
+//    "mute" shortcuts, whose replies are exact text. 1.0.14 (Chris 2026-11-20): before the first reading (a
+//    session's first message) the line is "Context ##% ░░░░░░░░░░".
 import type { EngineInterface, Register } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -59,6 +61,8 @@ export function contextLine(pct: number): string {
   const say = CONTEXT_LINE_TEXT[tier]
   return say === undefined ? `Context ${p}% ${bar}` : `⚠️ **Context ${p}% ${bar} ${say}** ⚠️`
 }
+// Before the engine has measured anything (a session's first message), Chris 2026-11-20: "##" in place of the number.
+export const FIRST_CONTEXT_LINE = 'Context ##% ░░░░░░░░░░'
 const CONTEXT_LINE_ORDER = (line: string) =>
   'CONTEXT LINE (context-guard): make this exact line, character for character, the very first line of your ' +
   'reply, then a blank line, then the TLDR line; one context line per reply, never repeated: ' + line
@@ -284,7 +288,7 @@ export const register: Register = on => {
     }
     if (!isShortcut) {
       const { pct } = await currentFill($)
-      if (pct !== undefined) context.push(CONTEXT_LINE_ORDER(contextLine(pct)))
+      context.push(CONTEXT_LINE_ORDER(pct === undefined ? FIRST_CONTEXT_LINE : contextLine(pct)))
     }
     return next({ ...e, context })
   })

@@ -20,7 +20,7 @@ const READOUT_8_BROKEN =
   `${NBSP}\n\n${NBSP}\n\n**CONTEXT: 8%** (16000 of 200000 tokens)\n\n${NBSP}\n\n` +
   `*RULES BROKEN*\\\n*Start a new session or tell Claude to fix it.*\n\n${NBSP}\n\n${NBSP}`
 
-function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused' } = {}) {
+function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused'; noUsage?: boolean } = {}) {
   const asked: string[] = []
   const buttons: string[][] = []
   const registered: Array<Record<string, unknown>> = []
@@ -41,7 +41,7 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     if (opts.registerThrows) throw new Error('register refused')
     return { value: { tool: 'mcp__context-guard__context_fill' } }
   })
-  on('session.usage', () => usage(opts.usagePct ?? 10))
+  on('session.usage', () => usage(opts.noUsage ? undefined : (opts.usagePct ?? 10)))
   const ran: string[][] = []
   on('process.run', (_, e) => {
     ran.push([...e.argv])
@@ -306,6 +306,18 @@ for (const [pct, line] of [
     expect(order.endsWith(': ' + line)).toBe(true)
   })
 }
+
+test('a first message with no reading yet carries the ## context line, and the next one the real number', async ($, on) => {
+  harness(on, { noUsage: true, fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const first = await $.prompt.submit({ text: 'context test' })
+  const order1 = (first.context ?? []).find(c => c.startsWith('CONTEXT LINE (context-guard)')) ?? ''
+  expect(order1.endsWith(': Context ##% ░░░░░░░░░░')).toBe(true)
+  await $.session.measure(measure(10))
+  const second = await $.prompt.submit({ text: 'second' })
+  const order2 = (second.context ?? []).find(c => c.startsWith('CONTEXT LINE (context-guard)')) ?? ''
+  expect(order2.endsWith(': Context 10% ▓░░░░░░░░░')).toBe(true)
+})
 
 test('the CC and mute shortcuts carry no context line order', async ($, on) => {
   harness(on, { usagePct: 61, fetchOk: true, mute: 'ok' })
