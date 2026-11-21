@@ -3,7 +3,8 @@
 // (rules list generated from Global Memory); 1.0.9 on 2026-11-17 (the "mute" / "unmute" shortcut, item 7);
 // 1.0.12 on 2026-11-18 (no-go line, item 8); 1.0.13 and 1.0.14 on 2026-11-20 (context line, item 9);
 // 1.0.15 on 2026-11-21 (the yes / no rule's offer line; a message that opens with a yes carries no no-go line);
-// 1.0.16 on 2026-11-21 (P40 compact in place: the compact_now tool, item 10).
+// 1.0.16 on 2026-11-21 (P40 compact in place: the compact_now tool, item 10);
+// 1.0.17 on 2026-11-21 (P40 auto compact: the warning lines are the trigger, item 11).
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of
@@ -44,6 +45,17 @@
 //    is still tried first: its "a turn is running" refusal is how the mod learns that a waiting message started
 //    a new turn, and then the compaction waits for that turn to end. Nothing calls the tool by itself: the
 //    warnings are unchanged.
+// 11. P40 auto compact (Chris's rulings 2026-11-21, 1.0.17): the three warning lines become the trigger.
+//    At 60 percent a question box asks "Context 61%. Auto compact will begin in 1 minute." with the buttons
+//    "Compact now" and "Wait". Compact now, or no tap for a minute, starts it; Wait holds it until the next
+//    line. At 65 percent (only after a Wait) the same box again. At 70 percent it starts with no box. Starting
+//    it means the mod submits a prompt of its own, a turn once the session is idle, that tells the session to
+//    open with "Context 71%. Auto compact is starting now.", write its notes, and call compact_now (item 10).
+//    A jump past several lines acts once, on the highest. A session start or a mod reload fires nothing: lines
+//    already passed are only marked as passed, so an idle old session never asks. Easy to put back (his word):
+//    the whole message "P40 off" in any session stores a flag that brings back the old three warning boxes
+//    (item 2) in every session, with no release; "P40 on" returns this. A deferred tool, p40_test, runs the
+//    step of line 1, 2, or 3 at the current fill, for tests.
 import type { EngineInterface, Register } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -123,6 +135,31 @@ export const P40_TEXT = (a: CompactAsk) =>
   'lines, the failure log, or anything else unasked.\n\n' +
   "Keep file paths, numbers, session ids, and Chris's words exactly. Drop tool output and file dumps."
 
+// P40 auto compact (item 11). His wording, 2026-11-21.
+const P40_STORE_KEY = 'p40Auto' // false = off (the old warning boxes); anything else = on
+const P40_ASK_MS = 60_000
+const P40_BUTTONS = ['Compact now', 'Wait'] as const
+export const P40_ASK_TEXT = (p: number) => `Context ${p}%. Auto compact will begin in 1 minute.`
+export const P40_START_LINE = (p: number) => `Context ${p}%. Auto compact is starting now.`
+const P40_GO_PROMPT = (p: number) =>
+  'P40 AUTO COMPACT (context-guard). This session has reached a context line and compacts in place now. ' +
+  `Start your reply with exactly this line and nothing before it: ${P40_START_LINE(p)}\n` +
+  "Then write your notes file and call the compact_now tool, exactly as that tool's description says (load it " +
+  'with ToolSearch first), and end the turn with one short line. Do nothing else in this turn: no other work ' +
+  'and no questions.'
+// When the mod could not submit the prompt itself, the same order rides beside his next typed message.
+const P40_RIDE = (p: number) =>
+  'P40 AUTO COMPACT (context-guard): this session has reached a context line. After you have answered the ' +
+  `message above, end your reply with exactly this line: ${P40_START_LINE(p)}\n` +
+  "Then write your notes file and call the compact_now tool, exactly as that tool's description says (load it " +
+  'with ToolSearch first), and end the turn.'
+// The whole message "P40 on" or "P40 off", any capitals, trailing periods or spaces allowed.
+const P40_SWITCH = /^\s*p40\s+(on|off)[\s.]*$/i
+const P40_SWITCH_ORDER = (reply: string) =>
+  'CONTEXT-GUARD SHORTCUT: the message above is the P40 switch; the mod has already set it. Reply with ' +
+  `exactly this line and nothing else, no tool calls: ${reply}`
+const P40_TEST_TOOL = /__p40_test$/
+
 // A line holding only a non-breaking space, so the chat cannot squeeze a blank line away.
 const BLANK = ' '
 
@@ -171,6 +208,12 @@ let tiersFired = 0
 let compactAsked: CompactAsk | undefined
 // P40: the log file, set from the folder of the last notes file a call named; none until then.
 let p40LogPath: string | undefined
+// P40 auto compact: one start per fill-up (a compaction or a reload clears it), and the percent whose order
+// waits to ride beside his next message when the mod could not submit the prompt itself.
+let p40GoSent = false
+let p40RideNext: number | undefined
+// The line p40_test was asked to run, waiting for the turn to end.
+let p40TestLine: number | undefined
 
 function p40LogBeside(notes: string): void {
   const cut = Math.max(notes.lastIndexOf('/'), notes.lastIndexOf('\\'))
@@ -252,17 +295,79 @@ function askBox($: EngineInterface, text: string, buttons: readonly string[]): v
   void $.ui.ask(text, [...buttons]).catch(() => undefined)
 }
 
+// P40 auto compact: the switch. Off only when the stored flag is exactly false.
+async function p40IsOn($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.store.get(P40_STORE_KEY)) !== false
+  } catch {
+    return true
+  }
+}
+
+// Starts the auto compact: a prompt of the mod's own, a turn once the session is idle. Once per fill-up.
+function p40Go($: EngineInterface, pct: number, how: string): void {
+  if (p40GoSent) return
+  p40GoSent = true
+  void p40Log($, `auto compact starts at ${pct}% (${how})`)
+  // Submitted from a timer, never from inside a hook: the engine refuses a prompt from a hook that is holding
+  // the turn ("called from a tool.call hook ... submit from a later event"; seen in the tests, 2026-11-21).
+  $.clock.after(COMPACT_DELAY_MS, () => {
+    void $.prompt.submit({ text: P40_GO_PROMPT(pct) }).then(
+      () => undefined,
+      async (err: unknown) => {
+        p40RideNext = pct
+        await p40Log($, `the start prompt was refused, so it rides beside his next message: ${String(err).slice(0, 200)}`)
+      },
+    )
+  })
+}
+
+// Lines 1 and 2: the question box. "Compact now" or a minute with no answer starts it; "Wait" (or any typed
+// answer) holds it until the next line. A dismissed box is no answer: the minute decides.
+function p40Ask($: EngineInterface, pct: number): void {
+  let settled = false
+  const decide = (how: 'now' | 'wait' | 'timeout'): void => {
+    if (settled) return
+    settled = true
+    if (how === 'wait') {
+      void p40Log($, `asked at ${pct}%: Wait`)
+      return
+    }
+    p40Go($, pct, how === 'now' ? 'Compact now' : 'no answer in 1 minute')
+  }
+  void $.ui.ask(P40_ASK_TEXT(pct), [...P40_BUTTONS]).then(
+    answer => decide(answer === P40_BUTTONS[0] ? 'now' : 'wait'),
+    () => undefined,
+  )
+  $.clock.after(P40_ASK_MS, () => decide('timeout'))
+}
+
+// The step of one warning line: lines 1 and 2 ask, line 3 starts with no box.
+function p40Line($: EngineInterface, line: number, pct: number): void {
+  const p = Math.round(pct)
+  if (line >= TIER_PCTS.length - 1) p40Go($, p, 'third line, no box')
+  else p40Ask($, p)
+}
+
 async function onFill($: EngineInterface, pct: number | undefined, window: number | undefined): Promise<void> {
   if (pct === undefined) return
   lastPct = pct
   lastWindow = window
-  // Fire every tier crossed and not yet fired, highest text last.
-  while (tiersFired < TIER_PCTS.length) {
-    const threshold = TIER_PCTS[tiersFired]
-    const say = TIER_TEXT[tiersFired]
-    if (threshold === undefined || say === undefined || pct < threshold) break
-    tiersFired += 1
-    askBox($, say(pct), TIER_BUTTONS)
+  let crossed = tiersFired
+  while (crossed < TIER_PCTS.length && pct >= (TIER_PCTS[crossed] as number)) crossed += 1
+  if (crossed === tiersFired) return
+  // Marked before the switch is read, so two readings close together cannot both act.
+  const from = tiersFired
+  tiersFired = crossed
+  if (await p40IsOn($)) {
+    // P40 auto compact (item 11): a jump past several lines acts once, on the highest.
+    p40Line($, crossed - 1, pct)
+    return
+  }
+  // P40 off: the old warning boxes, every line crossed and not yet fired, highest text last.
+  for (let i = from; i < crossed; i += 1) {
+    const say = TIER_TEXT[i]
+    if (say !== undefined) askBox($, say(pct), TIER_BUTTONS)
   }
 }
 
@@ -331,6 +436,12 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await loadRules($)
     tiersFired = 0
+    p40GoSent = false
+    p40RideNext = undefined
+    // The P40 log sits in the project's notes folder; steps before the first notes file are kept only if
+    // that folder already exists.
+    const cwd = (e as { cwd?: unknown }).cwd
+    if (typeof cwd === 'string' && cwd.length > 0) p40LogBeside(`${cwd}/_Claude/P40 Compact Notes/notes`)
     if (rulesSource !== 'repo') askBox($, RULES_BROKEN_BOX, RULES_BROKEN_BUTTONS)
     // Deferred (2026-11-06): a tool kept in front is not announced to the model when the mod attaches after
     // the conversation started (the 11-06 mid-session attach), while deferred tools are listed and loaded
@@ -366,9 +477,34 @@ export const register: Register = on => {
     } catch {
       // P40 is an extra; the warnings and the rules do not depend on it
     }
+    // P40 auto compact (item 11): the test tool, guarded the same way.
+    try {
+      await $.tool.register({
+        name: 'p40_test',
+        description:
+          'TEST ONLY (P40 auto compact): runs the step of warning line 1, 2, or 3 at the current fill, as if that line had just been crossed: lines 1 and 2 show the "Auto compact will begin in 1 minute" box, line 3 starts the auto compact with no box. Call it only when Chris or a test brief says to; load it with ToolSearch first.',
+        inputSchema: {
+          type: 'object',
+          properties: { line: { type: 'number', description: 'The warning line to act as: 1, 2, or 3.' } },
+          required: ['line'],
+        },
+        isDeferred: true,
+      })
+    } catch {
+      // a test tool only
+    }
     try {
       const u = await $.session.usage()
-      await onFill($, u.context.percent, u.context.window)
+      if (await p40IsOn($)) {
+        // P40 auto compact: a session start or a mod reload fires nothing. Lines already passed are marked
+        // as passed, so only a session that crosses a line while it is being used asks.
+        lastPct = u.context.percent
+        lastWindow = u.context.window
+        const now = u.context.percent
+        tiersFired = now === undefined ? 0 : TIER_PCTS.filter(t => now >= t).length
+      } else {
+        await onFill($, u.context.percent, u.context.window)
+      }
     } catch {
       // no usage yet
     }
@@ -394,7 +530,31 @@ export const register: Register = on => {
       return { drop: '​' }
     }
     const context = [...(e.context ?? []), rulesText]
-    const isShortcut = READOUT_SHORTCUT.test(e.text) || MUTE_SHORTCUT.test(e.text)
+    const p40Switch = P40_SWITCH.exec(e.text)
+    const isShortcut = READOUT_SHORTCUT.test(e.text) || MUTE_SHORTCUT.test(e.text) || p40Switch !== null
+    if (p40Switch) {
+      // "P40 off" brings back the old warning boxes in every session; "P40 on" returns the auto compact.
+      const turnOn = (p40Switch[1] ?? '').toLowerCase() === 'on'
+      let saved = true
+      try {
+        await $.store.set(P40_STORE_KEY, turnOn)
+      } catch {
+        saved = false
+      }
+      context.push(
+        P40_SWITCH_ORDER(
+          !saved
+            ? 'P40 switch failed: the setting could not be saved.'
+            : turnOn
+              ? 'P40 auto compact is on.'
+              : 'P40 auto compact is off. The old warning boxes are back.',
+        ),
+      )
+    }
+    if (!isShortcut && p40RideNext !== undefined) {
+      context.push(P40_RIDE(p40RideNext))
+      p40RideNext = undefined
+    }
     if (!isShortcut && !hasGo(e.text)) context.push(NO_GO_LINE)
     if (READOUT_SHORTCUT.test(e.text)) {
       context.push(`${SHORTCUT_ORDER}BEGIN\n${await readout($)}\nEND`)
@@ -444,10 +604,36 @@ export const register: Register = on => {
     }
   }).catch(() => ({ result: 'compact_now failed inside the mod; nothing was queued.' }))
 
+  // P40 auto compact (item 11): the test tool runs one line's step at the current fill.
+  on('tool.call', { tool: P40_TEST_TOOL }, async ($, e) => {
+    if (e.agentId !== undefined) return { result: 'Refused: only the main conversation.' }
+    const line = Math.round(Number((e as unknown as { line?: unknown }).line))
+    if (!(line >= 1 && line <= TIER_PCTS.length)) return { result: 'Refused: line must be 1, 2, or 3.' }
+    if (!(await p40IsOn($))) return { result: 'P40 auto compact is off ("P40 on" turns it on); nothing was run.' }
+    p40TestLine = line
+    return {
+      result:
+        line === TIER_PCTS.length
+          ? 'Line 3 step queued: when this turn ends, the auto compact starts with no box. End the turn now.'
+          : `Line ${line} step queued: when this turn ends, the box comes up. End the turn now.`,
+    }
+  }).catch(() => ({ result: 'p40_test failed inside the mod; nothing was run.' }))
+
   // Between turns, never inside one. A stopped turn drops the queued compaction.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined || compactAsked === undefined) return result
+    if (e.agentId !== undefined) return result
+    // The test tool's line step runs here, at the current fill, as a line just crossed would.
+    if (p40TestLine !== undefined) {
+      const line = p40TestLine
+      p40TestLine = undefined
+      if (!e.isAborted) {
+        const { pct } = await currentFill($)
+        p40GoSent = false
+        p40Line($, line - 1, pct ?? (TIER_PCTS[line - 1] as number))
+      }
+    }
+    if (compactAsked === undefined) return result
     const ask = compactAsked
     compactAsked = undefined
     if (e.isAborted) {
@@ -475,6 +661,8 @@ export const register: Register = on => {
       askBox($, COMPACTED_TEXT(pct), COMPACTED_BUTTONS)
     }
     tiersFired = 0
+    p40GoSent = false
+    p40RideNext = undefined
     return result
   }).catch(($, e, next) => (next.called ? next(e) : next(e)))
 }

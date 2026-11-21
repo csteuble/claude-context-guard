@@ -20,12 +20,15 @@ const READOUT_8_BROKEN =
   `${NBSP}\n\n${NBSP}\n\n**CONTEXT: 8%** (16000 of 200000 tokens)\n\n${NBSP}\n\n` +
   `*RULES BROKEN*\\\n*Start a new session or tell Claude to fix it.*\n\n${NBSP}\n\n${NBSP}`
 
-function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused'; noUsage?: boolean; onDisk?: string[] } = {}) {
+function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused'; noUsage?: boolean; onDisk?: string[]; p40On?: boolean; answer?: string } = {}) {
   const asked: string[] = []
   const buttons: string[][] = []
   const registered: Array<Record<string, unknown>> = []
   const entered: Array<{ text: string; context?: readonly string[] }> = []
   const store: Record<string, unknown> = opts.stored ? { firePoints: opts.stored } : {}
+  // P40 auto compact is on unless the stored flag is false. The older tests check the old warning boxes, so
+  // the harness stores the flag off unless a test asks for P40 (p40On leaves the store empty: the real default).
+  if (!opts.p40On) store.p40Auto = false
   on('http.fetch', () => ({
     value: opts.fetchOk
       ? { status: 200, ok: true, headers: {}, text: 'STANDING RULES FROM THE REPO\n- a rule long enough to pass the length check, so that the fetched copy is used over the baked one.' }
@@ -56,7 +59,8 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     const q = first?.question ?? ''
     asked.push(q)
     buttons.push((first?.options ?? []).map(o => o.label))
-    return { result: { questions: [], answers: { [q]: 'Got it' } } }
+    if (opts.answer === 'DISMISS') throw new Error('dismissed')
+    return { result: { questions: [], answers: { [q]: opts.answer ?? 'Got it' } } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.measure', (_, e) => e)
@@ -281,12 +285,15 @@ test('"CC TEST" pops the 60 percent box once with the current percent, and nothi
 test('the tool registers as deferred, so it is announced when the mod attaches mid-conversation', async ($, on) => {
   const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  expect(h.registered.length).toBe(2)
+  expect(h.registered.length).toBe(3)
   expect(h.registered[0].name).toBe('context_fill')
   expect(h.registered[0].isDeferred).toBe(true)
   // P40 (item 10): the second tool, deferred the same way.
   expect(h.registered[1].name).toBe('compact_now')
   expect(h.registered[1].isDeferred).toBe(true)
+  // P40 auto compact (item 11): the test tool.
+  expect(h.registered[2].name).toBe('p40_test')
+  expect(h.registered[2].isDeferred).toBe(true)
 })
 
 test('a refused tool registration does not stop session start: the rules still ride and the warnings still fire', async ($, on) => {
@@ -442,4 +449,147 @@ test('a compaction whose instructions already carry the pin is not pinned twice'
   expect(once.split('STANDING RULES (kept through compaction)').length - 1).toBe(1)
   await $.session.compact({ trigger: 'manual', instructions: once, messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
   expect((seen ?? '').split('STANDING RULES (kept through compaction)').length - 1).toBe(1)
+})
+
+// ---------- P40 auto compact (item 11, 1.0.17) ----------
+
+const GO = 'P40 AUTO COMPACT (context-guard)'
+const sentGo = (h: { entered: Array<{ text: string }> }) => h.entered.filter(m => m.text.includes(GO))
+
+test('P40: at 60 the box asks in his words with his two buttons; Wait holds it; 65 asks again; 70 starts with no box', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, answer: 'Wait' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(61))
+  expect(h.asked).toEqual(['Context 61%. Auto compact will begin in 1 minute.'])
+  expect(h.buttons[0]).toEqual(['Compact now', 'Wait'])
+  await clock.advance(61_000)
+  expect(sentGo(h).length).toBe(0)
+
+  await $.session.measure(measure(66))
+  expect(h.asked.length).toBe(2)
+  expect(h.asked[1]).toBe('Context 66%. Auto compact will begin in 1 minute.')
+  await clock.advance(61_000)
+  expect(sentGo(h).length).toBe(0)
+
+  await $.session.measure(measure(71))
+  await clock.advance(1_100)
+  expect(h.asked.length).toBe(2)
+  expect(sentGo(h).length).toBe(1)
+  expect(sentGo(h)[0].text).toContain('Context 71%. Auto compact is starting now.')
+})
+
+test('P40: "Compact now" starts it at once, and only once', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, answer: 'Compact now' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(60))
+  await clock.advance(1_100)
+  expect(sentGo(h).length).toBe(1)
+  expect(sentGo(h)[0].text).toContain('Context 60%. Auto compact is starting now.')
+  expect(sentGo(h)[0].text).toContain('compact_now')
+  await clock.advance(61_000)
+  await $.session.measure(measure(66))
+  await $.session.measure(measure(71))
+  await clock.advance(61_000)
+  expect(sentGo(h).length).toBe(1)
+})
+
+test('P40: a minute with no answer starts it', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, answer: 'DISMISS' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(62))
+  await clock.advance(59_000)
+  expect(sentGo(h).length).toBe(0)
+  await clock.advance(2_500)
+  expect(sentGo(h).length).toBe(1)
+  expect(sentGo(h)[0].text).toContain('Context 62%. Auto compact is starting now.')
+})
+
+test('P40: a jump past all three lines starts it once with no box', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(74))
+  await clock.advance(1_100)
+  expect(h.asked.length).toBe(0)
+  expect(sentGo(h).length).toBe(1)
+})
+
+test('P40: a session that starts or reloads already past a line asks nothing; the next line it crosses acts', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 66, answer: 'Wait' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(67))
+  await clock.advance(61_000)
+  expect(h.asked.length).toBe(0)
+  expect(sentGo(h).length).toBe(0)
+  await $.session.measure(measure(70))
+  await clock.advance(1_100)
+  expect(sentGo(h).length).toBe(1)
+})
+
+test('P40: after a compaction the lines are armed again', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, answer: 'Compact now' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(60))
+  await clock.advance(1_100)
+  expect(sentGo(h).length).toBe(1)
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  await $.session.measure(measure(12))
+  await $.session.measure(measure(60))
+  await clock.advance(1_100)
+  expect(sentGo(h).length).toBe(2)
+})
+
+test('"P40 off" stores the switch, hands Claude the one-line reply, and the old warning boxes are back; "P40 on" returns', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const off = await $.prompt.submit({ text: ' p40 OFF. ' })
+  expect(h.store.p40Auto).toBe(false)
+  expect((off.context ?? []).some(c => c.endsWith('P40 auto compact is off. The old warning boxes are back.'))).toBe(true)
+  expect((off.context ?? []).some(c => c.includes('NO GO IN THIS MESSAGE'))).toBe(false)
+  expect((off.context ?? []).some(c => c.startsWith('CONTEXT LINE'))).toBe(false)
+  await $.session.measure(measure(60))
+  expect(h.asked).toEqual(['CONTEXT: 60% - Wrap up soon.'])
+  expect(sentGo(h).length).toBe(0)
+
+  const back = await $.prompt.submit({ text: 'P40 on' })
+  expect(h.store.p40Auto).toBe(true)
+  expect((back.context ?? []).some(c => c.endsWith('P40 auto compact is on.'))).toBe(true)
+  await $.session.measure(measure(65))
+  await clock.settle()
+  expect(h.asked[1]).toBe('Context 65%. Auto compact will begin in 1 minute.')
+})
+
+test('"P40 off" inside a longer message means nothing special', async ($, on) => {
+  const h = harness(on, { fetchOk: true, p40On: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'should I type P40 off now?' })
+  expect(h.store.p40Auto).toBe(undefined)
+})
+
+test('the p40_test tool runs one line step at the current fill, when the turn ends', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 12, answer: 'Wait' })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const one = await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 1 } as never)
+  expect(String(one.result)).toContain('Line 1 step queued')
+  expect(h.asked.length).toBe(0)
+  await $.turn.complete(turnEnd())
+  await clock.settle()
+  expect(h.asked).toEqual(['Context 12%. Auto compact will begin in 1 minute.'])
+
+  const three = await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 3 } as never)
+  expect(String(three.result)).toContain('Line 3 step queued')
+  await $.turn.complete(turnEnd())
+  await clock.advance(1_100)
+  expect(sentGo(h).length).toBe(1)
+  expect(sentGo(h)[0].text).toContain('Context 12%. Auto compact is starting now.')
+
+  const bad = await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 7 } as never)
+  expect(String(bad.result)).toContain('Refused')
 })
