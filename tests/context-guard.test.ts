@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const usage = (percent: number | undefined, window = 200_000) => ({
   value: {
@@ -20,7 +20,7 @@ const READOUT_8_BROKEN =
   `${NBSP}\n\n${NBSP}\n\n**CONTEXT: 8%** (16000 of 200000 tokens)\n\n${NBSP}\n\n` +
   `*RULES BROKEN*\\\n*Start a new session or tell Claude to fix it.*\n\n${NBSP}\n\n${NBSP}`
 
-function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused'; noUsage?: boolean } = {}) {
+function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused'; noUsage?: boolean; onDisk?: string[] } = {}) {
   const asked: string[] = []
   const buttons: string[][] = []
   const registered: Array<Record<string, unknown>> = []
@@ -60,16 +60,48 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.measure', (_, e) => e)
+  // P40: the mod's own direct call carries no messages; it is refused, as a session the desktop app hosts refuses
+  // it, and the mod then queues a real /compact. (The harness cannot hand the mod the engine's own "a turn is
+  // running" refusal, so the waiting-message path is proven in a live session, not here: P40 Docs, 2026-11-21.)
   on('session.compact', (_, e) => {
+    if (e.trigger === 'plugin' || !Array.isArray(e.messages)) {
+      throw new Error('$.session.compact: not available in a headless (-p / SDK) session yet')
+    }
     opts.onCompact?.(e.instructions)
     return { messages: e.messages }
   })
+  // P40: files in memory, the queued /compact, and the end of a turn.
+  const files: Record<string, string> = {}
+  for (const p of opts.onDisk ?? []) files[p] = 'notes'
+  const commands: Array<{ command: string; args?: string }> = []
+  // The engine hands paths over with backslashes on Windows; the tests name them with forward slashes.
+  const key = (p: string) => p.split('\\').join('/')
+  on('fs.exists', (_, e) => ({ value: key(e.path) in files }))
+  on('fs.read', (_, e) => ({ value: files[key(e.path)] ?? '' }))
+  on('fs.write', (_, e) => {
+    files[key(e.path)] = e.text
+    return { value: undefined }
+  })
+  on('command.run', (_, e) => {
+    const c = e as unknown as { command: string; args?: string }
+    commands.push({ command: c.command, args: c.args })
+    return {}
+  })
+  on('turn.complete', (_, e) => ({ text: e.answer }))
   on('prompt.submit', (_, e) => {
     entered.push({ text: e.text, context: e.context })
     return { text: e.text, context: e.context }
   })
-  return { asked, buttons, store, registered, entered, ran }
+  return { asked, buttons, store, registered, entered, ran, files, commands }
 }
+
+// P40 (item 10): what the tests hand compact_now, and the end of a main-loop turn.
+const NOTES = 'C:/Project/_Claude/P40 Compact Notes/Test Session.md'
+const P40_LOG_FILE = 'C:/Project/_Claude/P40 Compact Notes/P40 Compact Log.txt'
+const compactNow = (notes: string) =>
+  ({ tool: 'mcp__context-guard__compact_now', notes, in_progress: 'Task T, stopped on step 3.', next: 'Do step 4.' }) as never
+const turnEnd = (isAborted = false) =>
+  ({ answer: 'ok', durationMs: 5, isAborted, turnId: 't1', reason: isAborted ? 'aborted' : 'answer' }) as never
 
 test('three warnings fire once each at 60 / 65 / 70 with the actual percent, in order', async ($, on) => {
   const h = harness(on, { fetchOk: true })
@@ -249,9 +281,12 @@ test('"CC TEST" pops the 60 percent box once with the current percent, and nothi
 test('the tool registers as deferred, so it is announced when the mod attaches mid-conversation', async ($, on) => {
   const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  expect(h.registered.length).toBe(1)
+  expect(h.registered.length).toBe(2)
   expect(h.registered[0].name).toBe('context_fill')
   expect(h.registered[0].isDeferred).toBe(true)
+  // P40 (item 10): the second tool, deferred the same way.
+  expect(h.registered[1].name).toBe('compact_now')
+  expect(h.registered[1].isDeferred).toBe(true)
 })
 
 test('a refused tool registration does not stop session start: the rules still ride and the warnings still fire', async ($, on) => {
@@ -341,4 +376,70 @@ test('the CC and mute shortcuts carry no context line order', async ($, on) => {
     const r = await $.prompt.submit({ text })
     expect((r.context ?? []).some(c => c.startsWith('CONTEXT LINE'))).toBe(false)
   }
+})
+
+// ---------- P40 compact in place (item 10, 1.0.16) ----------
+
+test('compact_now refuses when no notes file is on disk, and nothing is queued', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.tool.call(compactNow(NOTES))
+  expect(String(r.result)).toContain('Refused: there is no notes file')
+  await $.turn.complete(turnEnd())
+  await clock.advance(2_000)
+  expect(h.commands.length).toBe(0)
+})
+
+test('compact_now with notes on disk: when the turn ends, a real /compact is queued with the P40 text', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, onDisk: [NOTES] })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const r = await $.tool.call(compactNow(NOTES))
+  expect(String(r.result)).toContain('Compaction queued')
+  expect(h.commands.length).toBe(0)
+
+  await $.turn.complete(turnEnd())
+  await clock.advance(2_000)
+  expect(h.commands.length).toBe(1)
+  expect(h.commands[0].command).toBe('compact')
+  const args = h.commands[0].args ?? ''
+  expect(args).toContain('P40 RESUME')
+  expect(args).toContain('FIRST: Before the first reply after this compaction, read ALL of Global Memory')
+  expect(args).toContain('IN PROGRESS: Task T, stopped on step 3.')
+  expect(args).toContain(`NOTES: ${NOTES}`)
+  expect(args).toContain('NEXT: Do step 4.')
+  // The queued /compact passes the mod's own session.compact hook, which pins the rules, so the text carries no pin.
+  expect(args.includes('STANDING RULES (kept through compaction)')).toBe(false)
+  expect(h.files[P40_LOG_FILE]).toContain('compact_now: queued')
+  expect(h.files[P40_LOG_FILE]).toContain('compact done (queued /compact)')
+
+  // One call, one compaction: the next turn end queues nothing.
+  await $.turn.complete(turnEnd())
+  await clock.advance(2_000)
+  expect(h.commands.length).toBe(1)
+})
+
+test('a stopped turn drops the queued compaction', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, onDisk: [NOTES] })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.tool.call(compactNow(NOTES))
+  await $.turn.complete(turnEnd(true))
+  await clock.advance(2_000)
+  expect(h.commands.length).toBe(0)
+  await $.turn.complete(turnEnd())
+  await clock.advance(2_000)
+  expect(h.commands.length).toBe(0)
+})
+
+test('a compaction whose instructions already carry the pin is not pinned twice', async ($, on) => {
+  let seen: string | undefined
+  harness(on, { fetchOk: true, onCompact: i => { seen = i } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  const once = seen ?? ''
+  expect(once.split('STANDING RULES (kept through compaction)').length - 1).toBe(1)
+  await $.session.compact({ trigger: 'manual', instructions: once, messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  expect((seen ?? '').split('STANDING RULES (kept through compaction)').length - 1).toBe(1)
 })

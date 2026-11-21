@@ -17,6 +17,7 @@ What it does:
    - `CC` or `Context`: the reply is the readout alone. A mod's only way to write in chat without a Claude turn is a plain notice, which cannot carry the bold line or the forced blank lines, so the mod writes the readout into the message's hidden context with the order to reply with it alone, and Claude replies.
    - `CC TEST`: the mod pops the 60 percent warning box once with the current percent and drops the message, so no Claude turn runs. The drop's reason is a zero-width space, so no text line shows. The test does not use up the real 60 percent warning.
    - `mute` or `unmute` (no question mark): the mod runs `tools/Set Mute.ps1 on` or `off`, which SETS the PC's default playback device muted or unmuted through the Windows Core Audio API (never a toggle), then hands Claude the one-word reply, `Muted.` or `Unmuted.`, the way `CC` hands over the readout. A failed set makes the reply one line saying so. If the engine refuses the mod's `$.process.run`, Claude is handed the exact PowerShell command to run instead. Works from the phone over Remote Control, since the hook runs on the PC.
+7. **P40 compact in place: `mcp__context-guard__compact_now`** (1.0.16), a second deferred tool. A session that is getting full writes its notes file to disk (`_Claude\P40 Compact Notes\<session title>.md` in the project folder), calls the tool with the notes path, its IN PROGRESS line, and the one next action, and ends its turn. About a second after the turn ends the mod queues a real `/compact`, as if Chris had typed it (`$.command.run`; `$.session.compact` is refused in a session the desktop app hosts), so the session keeps its row and its conversation. A call that names no notes file on disk is refused. If a waiting message has started a new turn, the compaction waits for that turn to end; a stopped turn drops it. The instructions demand a `P40 RESUME` block in the summary whose FIRST line tells the session to read all of Global Memory and then the notes file before its first reply. Each step is written to `P40 Compact Log.txt` beside the notes file. Nothing calls the tool by itself: the warnings are unchanged.
 
 ## Changing the rules
 
@@ -34,10 +35,11 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Checks
 
-`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 30 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
+`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 34 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
 
 ## Versions
 
+- 1.0.16 (2026-11-21): P40 compact in place: the `compact_now` tool (item 7), tested first in a throwaway session as a separate copy; the rules pin is never added twice; four tests added (34 total).
 - 1.0.15 (2026-11-21): the yes / no rule gains its offer line ("Would you like me to <the thing>?"), and a message that opens with a yes (or is only "sure", "ok", or "okay") carries no no-go line, since it answers that offer; one test added (30 total).
 - 1.0.14 (2026-11-20): before the first reading (a session's first message) the context line is `Context ##% ░░░░░░░░░░`; one test added (29 total).
 - 1.0.13 (2026-11-20): every reply opens with the context line the mod hands over.

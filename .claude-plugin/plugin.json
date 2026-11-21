@@ -1,7 +1,7 @@
 {
   "name": "context-guard",
-  "version": "1.0.15",
-  "description": "Chris's context guard: warns at 60, 65, and 70 percent (question boxes on desktop and phone), measures the real fire point, pins the standing rules into every compaction summary, carries the standing rules beside every message, and answers where context is at on request.",
+  "version": "1.0.16",
+  "description": "Chris's context guard: warns at 60, 65, and 70 percent (question boxes on desktop and phone), measures the real fire point, pins the standing rules into every compaction summary, carries the standing rules beside every message, answers where context is at on request, and compacts a session in place when the session calls compact_now (P40).",
   "author": {
     "name": "Chris Steuble (built with Claude)"
   },
