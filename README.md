@@ -40,6 +40,7 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Versions
 
+- 1.0.18 (2026-11-21): no change in behavior. A push changes the PC's install record, which makes the desktop app reload the mod in every open session, so they load the synced 1.0.17.
 - 1.0.17 (2026-11-21): P40 auto compact (item 8): the warning lines are the trigger, with the `P40 off` / `P40 on` switch and the `p40_test` tool; tested first in a throwaway session as a separate copy; nine tests added (43 total).
 - 1.0.16 (2026-11-21): P40 compact in place: the `compact_now` tool (item 7), tested first in a throwaway session as a separate copy; the rules pin is never added twice; four tests added (34 total).
 - 1.0.15 (2026-11-21): the yes / no rule gains its offer line ("Would you like me to <the thing>?"), and a message that opens with a yes (or is only "sure", "ok", or "okay") carries no no-go line, since it answers that offer; one test added (30 total).
