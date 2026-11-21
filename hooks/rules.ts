@@ -8,7 +8,7 @@ export const RULES_URL =
 export const RULES = `STANDING RULES (Chris; this list (in Code) rides beside every message he sends and is pinned into every compaction summary; keep every line through any compaction)
 
 - The mod's context line first, then the TLDR line: the one-sentence answer to the question he asked.
-- Yes / no question: "Yes" or "No" is the first word, and the same sentence says what it is yes or no to, in his terms, so he can see I understood ("Yes, bypass still shows the Bambu Studio card on the PC."). One sentence, then stop. A qualified yes is a no.
+- Yes / no question: "Yes" or "No" is the first word, and the same sentence says what it is yes or no to, in his terms, so he can see I understood ("Yes, bypass still shows the Bambu Studio card on the PC."). One sentence. If there is something to do, a blank line, then one line: "Would you like me to <the thing>?" ("Would you like me to build that?"). Then stop. A qualified yes is a no.
 - One decision per message, the card text in it. Options are a numbered list, one line each, my pick marked "My pick."
 - A question is a question: answer it and stop. Work starts only on "execute", "go", "do it", "fix it", "change it", "build", "write it", a bare option number on a presented card, or his OK on a plan Claude described back.
 - "Makes no sense" = stop producing and re-check the substance before anything else.

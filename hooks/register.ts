@@ -1,7 +1,8 @@
 // context-guard, built for Chris 2026-10-19, rebuilt 2026-11-04 on his rulings of that day; 1.0.2 on 2026-11-06;
 // 1.0.3 and 1.0.4 on 2026-11-15; 1.0.5 to 1.0.7 on 2026-11-16 (standing rules text); 1.0.8 on 2026-11-16
 // (rules list generated from Global Memory); 1.0.9 on 2026-11-17 (the "mute" / "unmute" shortcut, item 7);
-// 1.0.12 on 2026-11-18 (no-go line, item 8); 1.0.13 and 1.0.14 on 2026-11-20 (context line, item 9).
+// 1.0.12 on 2026-11-18 (no-go line, item 8); 1.0.13 and 1.0.14 on 2026-11-20 (context line, item 9);
+// 1.0.15 on 2026-11-21 (the yes / no rule's offer line; a message that opens with a yes carries no no-go line).
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of
@@ -26,6 +27,8 @@
 //    engine refuses $.process.run, the order carries the exact PowerShell command for Claude to run instead.
 // 8. No-go line (Chris 2026-11-18, failure-log card 3, Option 1): when a message holds none of his go words
 //    and is not a bare option number, one line rides beside it saying so. It nudges; it blocks nothing.
+//    1.0.15 (Chris 2026-11-21): a yes / no answer now ends with "Would you like me to <the thing>?", so a message
+//    that opens with a yes (or is only "sure", "ok", or "okay") is his answer to that line and carries no no-go line.
 // 9. Context line (Chris 2026-11-20, 1.0.13): every reply opens with one line the mod hands over beside each
 //    message he types: "Context 47% ▓▓▓▓░░░░░░" below 60 percent, and from 60, 65, and 70 percent the bold
 //    warning line with signs, e.g. "⚠️ **Context 71% ▓▓▓▓▓▓▓░░░ Fucking wrap up!** ⚠️". Not on the "CC" and
@@ -97,9 +100,13 @@ const MUTE_SHORTCUT = /^\s*(un)?mute[\s.]*$/i
 // "write it", or a bare option number on a presented card.
 const GO_WORDS = /\b(execute|go|do it|fix it|change it|build|write it)\b/i
 const BARE_NUMBER = /^\s*\d+[\s.!]*$/
+// His answer to an offer line ("Would you like me to <the thing>?", the yes / no rule, Chris 2026-11-21): a message
+// that opens with a yes, or is nothing but "sure", "ok", or "okay".
+const OPENS_WITH_YES = /^\s*(yes|yeah|yep|yup|do that|do so|please do)\b/i
+const WHOLE_OK = /^\s*(sure|ok|okay)[\s.!]*$/i
 export const NO_GO_LINE = 'NO GO IN THIS MESSAGE: answer, record, or show only.'
 export function hasGo(text: string): boolean {
-  return GO_WORDS.test(text) || BARE_NUMBER.test(text)
+  return GO_WORDS.test(text) || BARE_NUMBER.test(text) || OPENS_WITH_YES.test(text) || WHOLE_OK.test(text)
 }
 
 // The setter's command, one PowerShell line with no double quotes (argv goes through Windows quoting): it finds

@@ -34,10 +34,11 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Checks
 
-`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 29 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
+`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 30 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
 
 ## Versions
 
+- 1.0.15 (2026-11-21): the yes / no rule gains its offer line ("Would you like me to <the thing>?"), and a message that opens with a yes (or is only "sure", "ok", or "okay") carries no no-go line, since it answers that offer; one test added (30 total).
 - 1.0.14 (2026-11-20): before the first reading (a session's first message) the context line is `Context ##% ░░░░░░░░░░`; one test added (29 total).
 - 1.0.13 (2026-11-20): every reply opens with the context line the mod hands over.
 - 1.0.12 (2026-11-18): the no-go line rides beside a message that holds none of Chris's go words.

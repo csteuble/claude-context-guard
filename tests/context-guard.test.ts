@@ -173,6 +173,21 @@ test('the no-go line rides only when the message holds no go word and is not a b
   }
 })
 
+test('a message that opens with a yes (his answer to an offer line) carries no no-go line', async ($, on) => {
+  harness(on, { fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const text of ['yes', 'Yes.', 'Yeah, put them up', 'yep', 'Yup!', 'Do that', 'please do', ' sure ', 'OK', 'Okay.']) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(2)
+    expect(r.context?.[1]).toContain('CONTEXT LINE (context-guard)')
+  }
+  for (const text of ['yesterday it broke', 'No', 'ok so what happened', 'sure it is safe?', 'that looks fine to me']) {
+    const r = await $.prompt.submit({ text })
+    expect(r.context?.length).toBe(3)
+    expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
+  }
+})
+
 test('when the fetch fails: baked rules ride, and a RULES BROKEN box with Got it / Thanks pops at session start', async ($, on) => {
   const h = harness(on, { fetchOk: false })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
