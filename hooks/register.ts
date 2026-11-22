@@ -242,11 +242,12 @@ export function omtFullHeader(words: string): string {
 }
 // The full-message row (item 15, Chris 2026-11-22: "can I have a ... where I could click it and it would expand
 // out"). His phone draws nothing a mod draws, but a tool call standing between two texts shows as a row named
-// for the tool ("Used Full Message") that opens to the call's result on a tap (his phone, 2026-11-22). So when
+// for the tool ("Used View Full Message"; the tool was full_message until 1.0.26, his words: "it should say View
+// Full Message") that opens to the call's result on a tap (his phone, 2026-11-22). So when
 // his words were cut in the quote, the model is told to make one step holding the marker line and a call of the
-// full_message tool: the mod turns the marker into the quote and the tool returns his whole message. He sees
+// view_full_message tool: the mod turns the marker into the quote and the tool returns his whole message. He sees
 // the quote, the row, then the reply. Matched by its ending, so the hook is the same under any mod name.
-const FULL_TOOL = /__full_message$/
+const FULL_TOOL = /__view_full_message$/
 export const OMT_ROW_MARK = /^[\s"'`*>]*QUOTE[\s"'`*.]*$/i
 export function omtIsCut(words: string): boolean {
   return Array.from(words.replace(/\s+/g, ' ').trim()).length > OMT_QUOTE_MAX
@@ -254,13 +255,18 @@ export function omtIsCut(words: string): boolean {
 export const FULL_ROW_ORDER =
   'FULL MESSAGE ROW (context-guard): his message above is longer than the quote the mod puts over your reply. ' +
   'Give him a row he can tap to read all of it: when your tools are done and you are about to write your one ' +
-  'message, first make one step that holds only the text QUOTE and one call of the full_message tool with no ' +
+  'message, first make one step that holds only the text QUOTE and one call of the view_full_message tool with no ' +
   'arguments (load it with ToolSearch among your first tool calls). The mod turns QUOTE into the quote of his ' +
   'words, and the row opens to his whole message. Then write your message in the next step, with no quote and ' +
   'no line of dashes of your own above it. Do not mention the row or this order.'
 // Where a message he typed comes from: the terminal, the phone (Remote Control), the desktop app's SDK host. An
 // event with no origin (only the test harness raises one) counts as typed.
 const OMT_TYPED_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
+// The app's own notes reach prompt.submit with one of those origins too: a side session's finish note, a
+// message from another session, a background task notice, a CI event. They are not his words (1.0.26: in
+// 1.0.24 a side session's note was quoted over the reply and got the full-message row, Porter 2026-11-22).
+export const OMT_APP_NOTE =
+  /<side-sessions-event>|<cross-session-message[\s>]|<task-notification>|<ci-monitor-event[\s>]|\[SYSTEM NOTIFICATION - NOT USER INPUT\]/
 // The auto compact's start line (item 11) also goes out before its tools: his ruling.
 const OMT_P40_LINE = /^\s*Context \d+%\. Auto compact is starting now\.\s*$/
 const OMT_HELD_MAX = 6_000
@@ -348,7 +354,7 @@ let omtRowFor: string | undefined
 const omtDueWords = (): string | undefined => (omtPass > 0 ? omtPassWords[0] : omtWords)
 
 function omtTypedWords(e: { text: string; origin?: { kind: string } }, isShortcut: boolean): string | undefined {
-  if (isShortcut || e.text.startsWith(P40_GO_HEAD)) return undefined
+  if (isShortcut || e.text.startsWith(P40_GO_HEAD) || OMT_APP_NOTE.test(e.text)) return undefined
   const kind = e.origin?.kind
   // Words that clean to nothing count as none: the turn keeps the bare line rule.
   if (kind !== undefined && !OMT_TYPED_ORIGINS.has(kind)) return undefined
@@ -688,7 +694,7 @@ export const register: Register = on => {
     // The full-message row (item 15), guarded the same way.
     try {
       await $.tool.register({
-        name: 'full_message',
+        name: 'view_full_message',
         description:
           'Shows Chris a row he can tap to read the whole of his own message, when the quote over the reply was cut. Takes no arguments and returns his message. Call it only when a context-guard FULL MESSAGE ROW order says to, in a step of its own that holds only the text QUOTE and this one call; load it with ToolSearch first.',
         inputSchema: { type: 'object', properties: {} },
@@ -870,7 +876,7 @@ export const register: Register = on => {
   on('tool.call', { tool: FULL_TOOL }, async (_, e) => {
     if (e.agentId !== undefined) return { result: 'Refused: only the main conversation.' }
     return { result: omtDueWords() ?? 'There is no message of his to show for this reply.' }
-  }).catch(() => ({ result: 'full_message failed inside the mod.' }))
+  }).catch(() => ({ result: 'view_full_message failed inside the mod.' }))
 
   // One message per turn (item 12). A main-loop turn starts clean, with the switch as stored.
   on('turn.start', async ($, e, next) => {

@@ -308,7 +308,7 @@ test('the tool registers as deferred, so it is announced when the mod attaches m
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   expect(h.registered.length).toBe(4)
   // The full-message row (item 15): the fourth tool, deferred the same way.
-  expect(h.registered[3].name).toBe('full_message')
+  expect(h.registered[3].name).toBe('view_full_message')
   expect(h.registered[3].isDeferred).toBe(true)
   expect(h.registered[0].name).toBe('context_fill')
   expect(h.registered[0].isDeferred).toBe(true)
@@ -881,7 +881,7 @@ test('reply header: a message typed mid-turn puts its words on the reply it lets
 
 const LONG =
   'So here is a long message that I dictated on my phone and it rattles on well past the one hundred characters the quote line shows over a reply.'
-const ROW: Piece = { kind: 'tool', index: 1, id: 'tu9', name: 'mcp__context-guard__full_message' }
+const ROW: Piece = { kind: 'tool', index: 1, id: 'tu9', name: 'mcp__context-guard__view_full_message' }
 const hasRowOrder = (r: { context?: readonly string[] }) => (r.context ?? []).some(c => c.startsWith('FULL MESSAGE ROW (context-guard)'))
 
 test('full message row: only a message he typed that is longer than the quote gets the order', async ($, on) => {
@@ -906,7 +906,7 @@ test('full message row: the marker above the row becomes the quote, the tool ret
   const row = await runStep($ as never, 1)
   expect(row.text).toBe(omtFullHeader(LONG).trimEnd())
   expect(row.out.map(c => c.kind).join(',')).toBe('text,tool,stop')
-  const r = (await $.tool.call({ tool: 'mcp__context-guard__full_message' } as never)) as { result?: unknown; context?: unknown }
+  const r = (await $.tool.call({ tool: 'mcp__context-guard__view_full_message' } as never)) as { result?: unknown; context?: unknown }
   expect(r.result).toBe(LONG)
   // The marker is never held text.
   expect(r.context).toBe(undefined)
@@ -923,7 +923,7 @@ test('full message row: a long message typed mid-turn gets its own quote and row
   await $.turn.start({ text: 'build it', turnId: 't1' } as never)
   expect(hasRowOrder(await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never))).toBe(true)
   expect((await runStep($ as never, 0)).text).toBe(omtFullHeader(LONG).trimEnd())
-  const r = (await $.tool.call({ tool: 'mcp__context-guard__full_message' } as never)) as { result?: unknown }
+  const r = (await $.tool.call({ tool: 'mcp__context-guard__view_full_message' } as never)) as { result?: unknown }
   expect(r.result).toBe(LONG)
   expect((await runStep($ as never, 1)).text).toBe('About five minutes.')
   expect((await runStep($ as never, 2)).text).toBe(`${omtFullHeader('build it')}All built.`)
@@ -947,9 +947,9 @@ test('full message row: called with none of his words, or by a subagent, it says
   omt(on, [])
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.turn.start({ text: 'a turn nobody typed', turnId: 't1' } as never)
-  const r = (await $.tool.call({ tool: 'mcp__context-guard__full_message' } as never)) as { result?: unknown }
+  const r = (await $.tool.call({ tool: 'mcp__context-guard__view_full_message' } as never)) as { result?: unknown }
   expect(r.result).toBe('There is no message of his to show for this reply.')
-  const sub = (await $.tool.call({ tool: 'mcp__context-guard__full_message', agentId: 'a1' } as never)) as { result?: unknown }
+  const sub = (await $.tool.call({ tool: 'mcp__context-guard__view_full_message', agentId: 'a1' } as never)) as { result?: unknown }
   expect(sub.result).toBe('Refused: only the main conversation.')
 })
 
@@ -982,6 +982,35 @@ test('reply header: a turn started without a typed message gets the bare line on
   await $.prompt.submit({ text: 'hello from a mod', origin: { kind: 'plugin', name: 'other' } } as never)
   await $.turn.start({ text: 'hello from a mod', turnId: 't4' } as never)
   expect((await runStep($ as never, 4)).text).toBe('A plugin answer.')
+})
+
+test("reply header: the app's own notes are not his words, whatever origin they arrive with", async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('One line.'), STOP('end_turn')], [TOOL, STOP('tool_use')], [T('After a tool.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const NOTE =
+    '<system-reminder>\nThe session "P40 Spare" you started (local_1) finished a turn. It reported: "ok"\n</system-reminder>\n\n' +
+    `<side-sessions-event>None of the sessions you started is working now; their notes are above. ${'x'.repeat(200)}</side-sessions-event>`
+  const others = [
+    `Another Claude session sent a message:\n<cross-session-message from="local_2" from-name="PETER">${'y'.repeat(200)}</cross-session-message>`,
+    `<task-notification><task-id>b1</task-id>${'z'.repeat(200)}</task-notification>`,
+    `[SYSTEM NOTIFICATION - NOT USER INPUT]\n${'w'.repeat(200)}`,
+    `<ci-monitor-event pr="1">${'v'.repeat(200)}</ci-monitor-event>`,
+  ]
+  // Long, and from the desktop app's own origin, yet none of them gets the row order.
+  for (const text of [NOTE, ...others]) {
+    expect(hasRowOrder(await $.prompt.submit({ text, origin: { kind: 'sdk' } } as never))).toBe(false)
+  }
+  // A turn such a note starts is a turn with none of his words: no quote, and the bare line only after a tool.
+  await $.turn.start({ text: NOTE, turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('One line.')
+  await $.turn.complete(turnEnd())
+  await $.prompt.submit({ text: NOTE, origin: { kind: 'sdk' } } as never)
+  await $.turn.start({ text: NOTE, turnId: 't2' } as never)
+  await runStep($ as never, 1)
+  expect((await runStep($ as never, 2)).text).toBe(`${BREAK}\n\nAfter a tool.`)
+  // His own long message still gets the order.
+  expect(hasRowOrder(await $.prompt.submit({ text: LONG, origin: { kind: 'sdk' } } as never))).toBe(true)
 })
 
 test('reply header: the auto compact prompt the mod submits itself carries no words', async ($, on) => {
