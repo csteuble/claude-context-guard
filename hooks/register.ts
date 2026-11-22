@@ -4,7 +4,8 @@
 // 1.0.12 on 2026-11-18 (no-go line, item 8); 1.0.13 and 1.0.14 on 2026-11-20 (context line, item 9);
 // 1.0.15 on 2026-11-21 (the yes / no rule's offer line; a message that opens with a yes carries no no-go line);
 // 1.0.16 on 2026-11-21 (P40 compact in place: the compact_now tool, item 10);
-// 1.0.17 on 2026-11-21 (P40 auto compact: the warning lines are the trigger, item 11).
+// 1.0.17 on 2026-11-21 (P40 auto compact: the warning lines are the trigger, item 11);
+// 1.0.21 on 2026-11-21 (one message per turn: the guard, the single working line, and the break, item 12).
 //
 // 1. Meter: the engine pushes the context fill on every change (session.measure). No timer.
 // 2. Three warnings, each a question box (the one channel both his desktop and phone draw), at fixed points of
@@ -56,7 +57,19 @@
 //    the whole message "P40 off" in any session stores a flag that brings back the old three warning boxes
 //    (item 2) in every session, with no release; "P40 on" returns this. A deferred tool, p40_test, runs the
 //    step of line 1, 2, or 3 at the current fill, for tests.
-import type { EngineInterface, Register } from 'claude-code'
+// 12. One message per turn (Chris 2026-11-21, his "Yes" to the rule and "a mod guard backs it"): the rule is
+//    "One message per turn, and it comes last." The guard: in a main-loop turn, text the model writes before a
+//    tool call is held back (never shown, never recorded) and handed back to the model beside that tool's
+//    result, with the order to put what he needs in the turn's one message at the end. Two things pass: the one
+//    line "Working on X, about N min", and the reply to a message he typed while the turn was running. To know
+//    whether a tool call follows, a step's text is kept until the step shows a tool call or its stop, so the
+//    last message appears whole, not word by word. Text held in a turn that ends without a last message is
+//    shown beneath it, so nothing is lost. Only the first working line of a turn goes out; later ones (the
+//    app asks for a status word every so often) are dropped. And the break (Chris 2026-11-21, "some sort of
+//    visual break ... it all blends"; his pick, the heavy line with no words): when anything came before the
+//    reply in a turn, a line of sixteen heavy dashes is stamped above it. The whole message "One message off" stores a flag that switches
+//    the guard off in every session, with no release; "One message on" returns it.
+import type { EngineInterface, Register, TurnStepChunk } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
 
@@ -90,7 +103,9 @@ export function contextLine(pct: number): string {
 export const FIRST_CONTEXT_LINE = 'Context ##% ░░░░░░░░░░'
 const CONTEXT_LINE_ORDER = (line: string) =>
   'CONTEXT LINE (context-guard): make this exact line, character for character, the very first line of your ' +
-  'reply, then a blank line, then the TLDR line; one context line per reply, never repeated: ' + line
+  'one message (the last text of the turn; a "Working on" line sent before the tools does not carry it), then ' +
+  'a blank line, then the TLDR line; one context line per turn, never repeated (the mod may stamp a line of ' +
+  'heavy dashes above your message: never write that line yourself): ' + line
 
 // Button pairs, Chris 2026-11-15. Two labels each, so the dialog adds no button of its own.
 const TIER_BUTTONS = ['Good Day to you', 'I said Good Day!'] as const
@@ -160,6 +175,30 @@ const P40_SWITCH_ORDER = (reply: string) =>
   `exactly this line and nothing else, no tool calls: ${reply}`
 const P40_TEST_TOOL = /__p40_test$/
 
+// One message per turn (item 12). Off only when the stored flag is exactly false.
+const OMT_STORE_KEY = 'oneMessage'
+// The whole message "One message on" or "One message off", any capitals, trailing periods or spaces allowed.
+const OMT_SWITCH = /^\s*one\s+message\s+(on|off)[\s.]*$/i
+const OMT_SWITCH_ORDER = (reply: string) =>
+  'CONTEXT-GUARD SHORTCUT: the message above is the one-message guard switch; the mod has already set it. ' +
+  `Reply with exactly this line and nothing else, no tool calls: ${reply}`
+// The one line that may go out before the tools (the context line may lead it).
+export const OMT_WORKING_LINE = /^\s*(?:[^\n]*Context [\d#]+%[^\n]*\n\s*)?Working on [^\n]{1,200}\s*$/
+// The break the mod stamps above the reply (his pick, 2026-11-21): sixteen heavy lines, no words.
+export const OMT_BREAK = '━━━━━━━━━━━━━━━━'
+// The auto compact's start line (item 11) also goes out before its tools: his ruling.
+const OMT_P40_LINE = /^\s*Context \d+%\. Auto compact is starting now\.\s*$/
+const OMT_HELD_MAX = 6_000
+// What the model reads beside the next tool result when its text was held; Chris never sees it.
+export const OMT_HELD_NOTE = (held: string) =>
+  '(context-guard) ONE MESSAGE PER TURN: the text you wrote before this tool call was held back. Chris has NOT ' +
+  'seen it, and it is not in the conversation. His rule: one message per turn, and it comes last; nothing is ' +
+  'written before or between tool calls except one line, "Working on X, about N min", when the work will run ' +
+  'over a minute. Finish the tools, then write the one message: it must carry everything he needs from the ' +
+  'held text below, once. Write no other text before the tools are done.\nHELD TEXT BEGIN\n' +
+  (held.length > OMT_HELD_MAX ? held.slice(0, OMT_HELD_MAX) + '\n[cut]' : held) +
+  '\nHELD TEXT END'
+
 // A line holding only a non-breaking space, so the chat cannot squeeze a blank line away.
 const BLANK = ' '
 
@@ -214,6 +253,19 @@ let p40GoSent = false
 let p40RideNext: number | undefined
 // The line p40_test was asked to run, waiting for the turn to end.
 let p40TestLine: number | undefined
+// One message per turn (item 12): the switch as read at the turn's start; whether a main-loop turn is running;
+// text held this turn and not yet handed back to the model; all text held this turn (shown beneath the turn's
+// end if no last message came); replies owed to messages he typed while the turn ran.
+let omtOn = true
+let omtRunning = false
+let omtDue: string[] = []
+let omtHeld: string[] = []
+let omtSaid = false
+let omtPass = 0
+// Whether anything (a tool call, a working line) came before the reply this turn, and whether the turn's one
+// working line has gone out.
+let omtBefore = false
+let omtWorked = false
 
 function p40LogBeside(notes: string): void {
   const cut = Math.max(notes.lastIndexOf('/'), notes.lastIndexOf('\\'))
@@ -262,6 +314,17 @@ async function compactInPlace($: EngineInterface, ask: CompactAsk): Promise<void
   } catch (err) {
     await p40Log($, `queued /compact REFUSED: ${String(err).slice(0, 400)}`)
   }
+}
+
+// One message per turn (item 12): the end of a main-loop turn. Text that was held and never reached him (no
+// last message came, or the model never got it back) is shown beneath the turn's end, so nothing is lost.
+function omtEnd<R extends { text: string }>(result: R): R {
+  const lost = omtDue.length > 0 || !omtSaid ? omtHeld : []
+  omtRunning = false
+  omtPass = 0
+  omtDue = []
+  omtHeld = []
+  return lost.length === 0 ? result : { ...result, text: lost.join('\n\n') }
 }
 
 async function loadRules($: EngineInterface): Promise<void> {
@@ -531,7 +594,31 @@ export const register: Register = on => {
     }
     const context = [...(e.context ?? []), rulesText]
     const p40Switch = P40_SWITCH.exec(e.text)
-    const isShortcut = READOUT_SHORTCUT.test(e.text) || MUTE_SHORTCUT.test(e.text) || p40Switch !== null
+    const omtSwitch = OMT_SWITCH.exec(e.text)
+    const isShortcut =
+      READOUT_SHORTCUT.test(e.text) || MUTE_SHORTCUT.test(e.text) || p40Switch !== null || omtSwitch !== null
+    // One message per turn: a message he types while a turn is running gets its own reply, so the guard lets
+    // the next text through.
+    if (omtRunning && !isShortcut) omtPass += 1
+    if (omtSwitch) {
+      const guardOn = (omtSwitch[1] ?? '').toLowerCase() === 'on'
+      let saved = true
+      try {
+        await $.store.set(OMT_STORE_KEY, guardOn)
+        omtOn = guardOn
+      } catch {
+        saved = false
+      }
+      context.push(
+        OMT_SWITCH_ORDER(
+          !saved
+            ? 'One message switch failed: the setting could not be saved.'
+            : guardOn
+              ? 'The one-message guard is on.'
+              : 'The one-message guard is off.',
+        ),
+      )
+    }
     if (p40Switch) {
       // "P40 off" brings back the old warning boxes in every session; "P40 on" returns the auto compact.
       const turnOn = (p40Switch[1] ?? '').toLowerCase() === 'on'
@@ -619,10 +706,119 @@ export const register: Register = on => {
     }
   }).catch(() => ({ result: 'p40_test failed inside the mod; nothing was run.' }))
 
+  // One message per turn (item 12). A main-loop turn starts clean, with the switch as stored.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      omtRunning = true
+      omtDue = []
+      omtHeld = []
+      omtSaid = false
+      omtPass = 0
+      omtBefore = false
+      omtWorked = false
+      try {
+        omtOn = (await $.store.get(OMT_STORE_KEY)) !== false
+      } catch {
+        omtOn = true
+      }
+    }
+    return next(e)
+  })
+
+  // A step's text is kept from its first piece until the step shows a tool call or its stop. Before a tool call
+  // only the working line, the auto compact's start line, and an owed reply go out; anything else is held.
+  on('turn.step', async function* ($, e, next) {
+    const stream = next(e)
+    if (e.agentId !== undefined || !omtOn) return yield* stream
+    let kept: TurnStepChunk[] = []
+    let text = ''
+    let shown = ''
+    let sawTool = false
+    let heldHere = false
+    const settle = (isLast: boolean): TurnStepChunk[] => {
+      const out = kept
+      const said = text
+      kept = []
+      text = ''
+      if (said.trim().length === 0) return out
+      if (!isLast) {
+        if (OMT_WORKING_LINE.test(said)) {
+          // Only the first working line of a turn goes out; later ones are dropped, unrecorded and unanswered.
+          if (omtWorked) {
+            heldHere = true
+            return out.filter(c => c.kind !== 'text')
+          }
+          omtWorked = true
+        } else if (!OMT_P40_LINE.test(said)) {
+          if (omtPass > 0) omtPass -= 1
+          else {
+            omtDue.push(said.trim())
+            omtHeld.push(said.trim())
+            heldHere = true
+            return out.filter(c => c.kind !== 'text')
+          }
+        }
+        omtBefore = true
+        shown += said
+        return out
+      }
+      omtSaid = true
+      // The break (Chris 2026-11-21: "it all blends"; his pick, the heavy line with no words): stamped above
+      // the reply when anything came before it in this turn. Never doubled if the model wrote one itself.
+      if (omtBefore && !said.trimStart().startsWith(OMT_BREAK)) {
+        let isStamped = false
+        heldHere = true
+        shown += `${OMT_BREAK}\n\n${said}`
+        return out.map(c => {
+          if (isStamped || c.kind !== 'text') return c
+          isStamped = true
+          return { ...c, text: `${OMT_BREAK}\n\n${c.text}` }
+        })
+      }
+      shown += said
+      return out
+    }
+    for (;;) {
+      const r = await stream.next()
+      if (r.done) {
+        // No stop came (the request failed or was cut off): what was kept goes out as it is.
+        for (const c of kept) yield c
+        return heldHere ? { ...r.value, answer: shown + text } : r.value
+      }
+      const c = r.value
+      if (c.kind === 'text') {
+        kept.push(c)
+        text += c.text
+      } else if (c.kind === 'tool') {
+        sawTool = true
+        for (const k of settle(false)) yield k
+        omtBefore = true
+        yield c
+      } else if (c.kind === 'stop') {
+        const isLast = !sawTool && c.stopReason !== 'tool_use' && c.stopReason !== 'pause_turn'
+        for (const k of settle(isLast)) yield k
+        yield c
+      } else if (kept.length > 0) kept.push(c)
+      else yield c
+    }
+  })
+
+  // Held text goes back to the model beside the next tool result: the model reads it, Chris never sees it.
+  on('tool.call', async ($, e, next) => {
+    const r = await next(e)
+    if (omtDue.length === 0 || e.agentId !== undefined) return r
+    if ((r as { deny?: unknown }).deny !== undefined) return r
+    const note = OMT_HELD_NOTE(omtDue.join('\n\n'))
+    omtDue = []
+    const prior = (r as { context?: unknown }).context
+    return { ...r, context: [...(Array.isArray(prior) ? (prior as string[]) : []), note] } as unknown as typeof r
+  })
+
   // Between turns, never inside one. A stopped turn drops the queued compaction.
   on('turn.complete', async ($, e, next) => {
-    const result = await next(e)
-    if (e.agentId !== undefined) return result
+    const under = await next(e)
+    if (e.agentId !== undefined) return under
+    const result = omtEnd(under)
     // The test tool's line step runs here, at the current fill, as a line just crossed would.
     if (p40TestLine !== undefined) {
       const line = p40TestLine

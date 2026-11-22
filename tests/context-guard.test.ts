@@ -593,3 +593,165 @@ test('the p40_test tool runs one line step at the current fill, when the turn en
   const bad = await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 7 } as never)
   expect(String(bad.result)).toContain('Refused')
 })
+
+// ---------- One message per turn (item 12) ----------
+
+type Piece = { kind: string; index?: number; text?: string; id?: string; name?: string; stopReason?: string | null; usage?: null }
+const T = (text: string): Piece => ({ kind: 'text', index: 0, text })
+const TOOL: Piece = { kind: 'tool', index: 1, id: 'tu1', name: 'mcp__x__y' }
+const STOP = (stopReason: string): Piece => ({ kind: 'stop', stopReason, usage: null })
+const HELD_NOTE = '(context-guard) ONE MESSAGE PER TURN'
+const BREAK = '━━━━━━━━━━━━━━━━'
+
+// The bottom of the chain for a turn: each call of turn.step plays the next scripted step.
+function omt(on: Parameters<Parameters<typeof test>[1]>[1], steps: Piece[][]) {
+  let n = 0
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.step', async function* (_, e) {
+    const pieces = steps[n++] ?? []
+    let answer = ''
+    for (const p of pieces) {
+      if (p.kind === 'text') answer += p.text
+      yield p as never
+    }
+    const stop = pieces.find(p => p.kind === 'stop')
+    return { turnId: e.turnId, index: e.index, answer, toolUses: [], stopReason: stop?.stopReason ?? null, usage: null } as never
+  })
+  on('tool.call', { tool: 'mcp__x__y' }, () => ({ result: 'tool ran' }) as never)
+}
+
+async function runStep($: { turn: { step: (i: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, index = 0, agentId?: string) {
+  const out: Piece[] = []
+  const s = $.turn.step({ turnId: 't1', index, model: 'm', messageCount: 1, ...(agentId ? { agentId } : {}) } as never)
+  let r = await s.next()
+  while (!r.done) {
+    out.push(r.value as Piece)
+    r = await s.next()
+  }
+  const result = r.value as { answer: string }
+  return { out, result, text: out.filter(c => c.kind === 'text').map(c => c.text).join('') }
+}
+
+test('one message: text before a tool call is held, and handed back to the model beside the tool result', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('**TLDR:** the answer. '), T('More.'), TOOL, STOP('tool_use')], [T('Final message.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'hi', turnId: 't1' } as never)
+
+  const first = await runStep($ as never, 0)
+  expect(first.text).toBe('')
+  expect(first.out.some(c => c.kind === 'tool')).toBe(true)
+  expect(first.out.some(c => c.kind === 'stop')).toBe(true)
+  expect(first.result.answer).toBe('')
+
+  const r = (await $.tool.call({ tool: 'mcp__x__y' } as never)) as { result?: unknown; context?: string }
+  expect(r.result).toBe('tool ran')
+  expect(String(r.context)).toContain(HELD_NOTE)
+  expect(String(r.context)).toContain('HELD TEXT BEGIN\n**TLDR:** the answer. More.\nHELD TEXT END')
+  const again = (await $.tool.call({ tool: 'mcp__x__y' } as never)) as { context?: string }
+  expect(again.context).toBe(undefined)
+
+  // The reply comes after a tool call, so the break is stamped above it.
+  const last = await runStep($ as never, 1)
+  expect(last.text).toBe(`${BREAK}\n\nFinal message.`)
+  expect(last.result.answer).toBe(`${BREAK}\n\nFinal message.`)
+  const end = await $.turn.complete(turnEnd())
+  expect(end.text).toBe('ok')
+})
+
+test('one message: the break is stamped above the reply only when something came before it, and never twice', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [
+    [T('A plain reply, no tools.'), STOP('end_turn')],
+    [T('Working on it, about 2 min.'), TOOL, STOP('tool_use')],
+    [T('Context 12% ▓░░░░░░░░░\n\n'), T('**TLDR:** done.'), STOP('end_turn')],
+    [TOOL, STOP('tool_use')],
+    [T(`${BREAK}\n\nThe model wrote the break itself.`), STOP('end_turn')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'hi', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('A plain reply, no tools.')
+  await $.turn.complete(turnEnd())
+
+  await $.turn.start({ text: 'build', turnId: 't2' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Working on it, about 2 min.')
+  expect((await runStep($ as never, 1)).text).toBe(`${BREAK}\n\nContext 12% ▓░░░░░░░░░\n\n**TLDR:** done.`)
+  await $.turn.complete(turnEnd())
+
+  await $.turn.start({ text: 'again', turnId: 't3' } as never)
+  await runStep($ as never, 0)
+  expect((await runStep($ as never, 1)).text).toBe(`${BREAK}\n\nThe model wrote the break itself.`)
+})
+
+test('one message: the working line and the auto compact start line go out before the tools', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [
+    [T('Working on the build, about 5 min.'), TOOL, STOP('tool_use')],
+    [T('Context 22% ▓▓░░░░░░░░\n\nWorking on the tests, about 2 min left.'), TOOL, STOP('tool_use')],
+    [T('Context 71%. Auto compact is starting now.'), TOOL, STOP('tool_use')],
+    [T('Working on it.\n\n**TLDR:** and here is the answer too.'), TOOL, STOP('tool_use')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'hi', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Working on the build, about 5 min.')
+  // Only the first working line of a turn goes out; the second is dropped, with no note to the model.
+  expect((await runStep($ as never, 1)).text).toBe('')
+  expect((await runStep($ as never, 2)).text).toBe('Context 71%. Auto compact is starting now.')
+  const none = (await $.tool.call({ tool: 'mcp__x__y' } as never)) as { context?: string }
+  expect(none.context).toBe(undefined)
+  // A working line that carries an answer with it is not the working line.
+  expect((await runStep($ as never, 3)).text).toBe('')
+})
+
+test('one message: a message he types while the turn runs lets one reply through, and only one', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('About five minutes.'), TOOL, STOP('tool_use')], [T('A note to myself.'), TOOL, STOP('tool_use')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'build it', turnId: 't1' } as never)
+  await $.prompt.submit({ text: 'how long will that take?' })
+  expect((await runStep($ as never, 0)).text).toBe('About five minutes.')
+  expect((await runStep($ as never, 1)).text).toBe('')
+})
+
+test('one message: held text with no last message after it is shown beneath the end of the turn', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('The answer.'), TOOL, STOP('tool_use')], [STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'hi', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('')
+  await $.tool.call({ tool: 'mcp__x__y' } as never)
+  expect((await runStep($ as never, 1)).text).toBe('')
+  const end = await $.turn.complete(turnEnd())
+  expect(end.text).toBe('The answer.')
+  // The next turn starts clean.
+  await $.turn.start({ text: 'next', turnId: 't2' } as never)
+  const end2 = await $.turn.complete(turnEnd())
+  expect(end2.text).toBe('ok')
+})
+
+test('one message: "One message off" lets everything through in every session; "One message on" returns the guard', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
+  omt(on, [[T('Text before a tool.'), TOOL, STOP('tool_use')], [T('Text before a tool.'), TOOL, STOP('tool_use')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const off = await $.prompt.submit({ text: 'One message off' })
+  expect(h.store.oneMessage).toBe(false)
+  expect((off.context ?? []).some(c => c.includes('The one-message guard is off.'))).toBe(true)
+  expect((off.context ?? []).some(c => c.startsWith('CONTEXT LINE'))).toBe(false)
+  await $.turn.start({ text: 'hi', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Text before a tool.')
+  await $.turn.complete(turnEnd())
+
+  const back = await $.prompt.submit({ text: 'one message on.' })
+  expect(h.store.oneMessage).toBe(true)
+  expect((back.context ?? []).some(c => c.includes('The one-message guard is on.'))).toBe(true)
+  await $.turn.start({ text: 'hi', turnId: 't2' } as never)
+  expect((await runStep($ as never, 1)).text).toBe('')
+})
+
+test('one message: a subagent step is left alone', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('Subagent text before a tool.'), TOOL, STOP('tool_use')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'hi', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0, 'agent-1')).text).toBe('Subagent text before a tool.')
+})
