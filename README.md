@@ -48,6 +48,7 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Versions
 
+- 1.0.28 (2026-11-22): the row's tool is renamed `-_view_full_message` (Chris: "Then add a dash after Used", so the row can read "Used - View Full Message" where the surface turns underscores into spaces; the PC web view drops the leading dash and reads the same as before). The row order now names the tool in full with its ToolSearch query. No other change.
 - 1.0.27 (2026-11-22): no change in behavior. Pushed after this PC downloaded 1.0.26 (16:17), so every open session reloads into it (a check at 16:19 showed an open session does not reload by itself after a download).
 - 1.0.26 (2026-11-22): the reply header and the full-message row no longer fire on the app's own notes (a side session's finish note, a message from another session, a background task notice, a CI event): in 1.0.24 such a note was quoted over the reply as if Chris had typed it. The row's tool is renamed `view_full_message` (Chris: "it should say View Full Message"; his phone shows "Used" plus the tool's name). One test added (68).
 - 1.0.25 (2026-11-22): no change in behavior. Pushed after this PC downloaded 1.0.24 (14:57), so every open session reloads into it.

@@ -247,7 +247,10 @@ export function omtFullHeader(words: string): string {
 // his words were cut in the quote, the model is told to make one step holding the marker line and a call of the
 // view_full_message tool: the mod turns the marker into the quote and the tool returns his whole message. He sees
 // the quote, the row, then the reply. Matched by its ending, so the hook is the same under any mod name.
-const FULL_TOOL = /__view_full_message$/
+// 1.0.28: the name starts with a dash and an underscore (Chris: "Then add a dash after Used"), so that a
+// surface that turns underscores into spaces can show "Used - View Full Message". The PC web view drops the
+// leading dash and shows "view full message"; his phone formats names its own way and had not been seen.
+const FULL_TOOL = /__-_view_full_message$/
 export const OMT_ROW_MARK = /^[\s"'`*>]*QUOTE[\s"'`*.]*$/i
 export function omtIsCut(words: string): boolean {
   return Array.from(words.replace(/\s+/g, ' ').trim()).length > OMT_QUOTE_MAX
@@ -255,8 +258,8 @@ export function omtIsCut(words: string): boolean {
 export const FULL_ROW_ORDER =
   'FULL MESSAGE ROW (context-guard): his message above is longer than the quote the mod puts over your reply. ' +
   'Give him a row he can tap to read all of it: when your tools are done and you are about to write your one ' +
-  'message, first make one step that holds only the text QUOTE and one call of the view_full_message tool with no ' +
-  'arguments (load it with ToolSearch among your first tool calls). The mod turns QUOTE into the quote of his ' +
+  'message, first make one step that holds only the text QUOTE and one call of the tool mcp__context-guard__-_view_full_message with no ' +
+  'arguments (load it among your first tool calls with ToolSearch, query "select:mcp__context-guard__-_view_full_message"). The mod turns QUOTE into the quote of his ' +
   'words, and the row opens to his whole message. Then write your message in the next step, with no quote and ' +
   'no line of dashes of your own above it. Do not mention the row or this order.'
 // Where a message he typed comes from: the terminal, the phone (Remote Control), the desktop app's SDK host. An
@@ -694,7 +697,7 @@ export const register: Register = on => {
     // The full-message row (item 15), guarded the same way.
     try {
       await $.tool.register({
-        name: 'view_full_message',
+        name: '-_view_full_message',
         description:
           'Shows Chris a row he can tap to read the whole of his own message, when the quote over the reply was cut. Takes no arguments and returns his message. Call it only when a context-guard FULL MESSAGE ROW order says to, in a step of its own that holds only the text QUOTE and this one call; load it with ToolSearch first.',
         inputSchema: { type: 'object', properties: {} },
