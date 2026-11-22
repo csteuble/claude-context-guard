@@ -230,7 +230,7 @@ test('when the fetch fails: baked rules ride, and a RULES BROKEN box with Got it
   expect(h.asked).toEqual(['RULES BROKEN\nStart a new session or tell Claude to fix it.'])
   expect(h.buttons[0]).toEqual(['Got it', 'Thanks'])
   const r = await $.prompt.submit({ text: 'hello' })
-  expect(r.context?.[0]).toContain('then the TLDR line')
+  expect(r.context?.[0]).toContain('The TLDR line first')
 })
 
 test('the context_fill tool answers with the readout alone', async ($, on) => {
@@ -383,6 +383,31 @@ test('the CC and mute shortcuts carry no context line order', async ($, on) => {
     const r = await $.prompt.submit({ text })
     expect((r.context ?? []).some(c => c.startsWith('CONTEXT LINE'))).toBe(false)
   }
+})
+
+test('with P40 on a typed message carries no context line order; "P40 off" brings it back and "P40 on" takes it away again', async ($, on) => {
+  const h = harness(on, { usagePct: 47, fetchOk: true, p40On: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const hasLine = (r: { context?: readonly string[] }) => (r.context ?? []).some(c => c.startsWith('CONTEXT LINE'))
+  const quiet = await $.prompt.submit({ text: 'hello there' })
+  expect(hasLine(quiet)).toBe(false)
+  // The rules and the no-go line still ride.
+  expect(quiet.context?.[0]).toContain('STANDING RULES FROM THE REPO')
+  expect(quiet.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
+  expect(quiet.context?.length).toBe(2)
+
+  await $.prompt.submit({ text: 'P40 off' })
+  expect(h.store.p40Auto).toBe(false)
+  const loud = await $.prompt.submit({ text: 'go' })
+  const order = (loud.context ?? []).find(c => c.startsWith('CONTEXT LINE (context-guard)')) ?? ''
+  expect(order.endsWith(': Context 47% ▓▓▓▓░░░░░░')).toBe(true)
+
+  await $.prompt.submit({ text: 'P40 on' })
+  expect(h.store.p40Auto).toBe(true)
+  expect(hasLine(await $.prompt.submit({ text: 'go' }))).toBe(false)
+  // The readout shortcut still answers with the number.
+  const cc = await $.prompt.submit({ text: 'CC' })
+  expect((cc.context ?? []).some(c => c.includes('CONTEXT: 47%'))).toBe(true)
 })
 
 // ---------- P40 compact in place (item 10, 1.0.16) ----------
@@ -550,7 +575,7 @@ test('"P40 off" stores the switch, hands Claude the one-line reply, and the old 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const off = await $.prompt.submit({ text: ' p40 OFF. ' })
   expect(h.store.p40Auto).toBe(false)
-  expect((off.context ?? []).some(c => c.endsWith('P40 auto compact is off. The old warning boxes are back.'))).toBe(true)
+  expect((off.context ?? []).some(c => c.endsWith('P40 auto compact is off. The old warning boxes and the context line are back.'))).toBe(true)
   expect((off.context ?? []).some(c => c.includes('NO GO IN THIS MESSAGE'))).toBe(false)
   expect((off.context ?? []).some(c => c.startsWith('CONTEXT LINE'))).toBe(false)
   await $.session.measure(measure(60))

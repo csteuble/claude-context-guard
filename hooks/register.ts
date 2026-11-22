@@ -69,6 +69,11 @@
 //    visual break ... it all blends"; his pick, the heavy line with no words): when anything came before the
 //    reply in a turn, a line of sixteen heavy dashes is stamped above it. The whole message "One message off" stores a flag that switches
 //    the guard off in every session, with no release; "One message on" returns it.
+// 13. No context line while P40 is on (Chris 2026-11-22, "do it in such a way that if the world falls apart
+//    and P40 stops working, we can easily bring them back on"): a session that compacts by itself no longer
+//    needs its fill shown on every reply, so the context line order (1.0.13) rides beside his message only
+//    while the P40 switch is off. "P40 off" brings back the line together with the old warning boxes, in
+//    every session, with no release; "P40 on" takes both away again. "CC" still gives the number any time.
 import type { EngineInterface, Register, TurnStepChunk } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -85,8 +90,8 @@ const TIER_TEXT = [
   (p: number) => `CONTEXT: ${p}% - WRAP THE FUCK UP!!`,
 ] as const
 
-// The context line that opens every reply (Chris 2026-11-20): his words for each tier, sentence case, one
-// exclamation mark; a 10-block bar, one block per full 10 percent.
+// The context line that opens every reply while P40 is off (Chris 2026-11-20; item 13 since 2026-11-22): his
+// words for each tier, sentence case, one exclamation mark; a 10-block bar, one block per full 10 percent.
 const CONTEXT_LINE_TEXT = ['Wrap up soon.', 'I said wrap up!', 'Fucking wrap up!'] as const
 export function contextLine(pct: number): string {
   const p = Math.round(pct)
@@ -138,7 +143,7 @@ export const P40_TEXT = (a: CompactAsk) =>
   'from the conversation, write "none" where one is empty, and never guess.\n' +
   'FIRST: Before the first reply after this compaction, read ALL of Global Memory (the rules file the ' +
   'startup instructions name; a compaction drops it), then all of the NOTES file. Open that reply with the ' +
-  'context line, then the IN PROGRESS line word for word, then the answer.\n' +
+  'IN PROGRESS line word for word (under the context line, if the mod hands you one), then the answer.\n' +
   `IN PROGRESS: ${a.inProgress}\n` +
   `NOTES: ${a.notes}\n` +
   'OPEN CARD: the card or question in front of Chris, word for word: its TLDR line, every option with its ' +
@@ -634,7 +639,7 @@ export const register: Register = on => {
             ? 'P40 switch failed: the setting could not be saved.'
             : turnOn
               ? 'P40 auto compact is on.'
-              : 'P40 auto compact is off. The old warning boxes are back.',
+              : 'P40 auto compact is off. The old warning boxes and the context line are back.',
         ),
       )
     }
@@ -650,7 +655,8 @@ export const register: Register = on => {
     if (mute) {
       context.push(await muteOrder($, mute[1] ? 'off' : 'on'))
     }
-    if (!isShortcut) {
+    // Item 13: the context line rides only while P40 is off; with P40 on the session compacts by itself.
+    if (!isShortcut && !(await p40IsOn($))) {
       const { pct } = await currentFill($)
       context.push(CONTEXT_LINE_ORDER(pct === undefined ? FIRST_CONTEXT_LINE : contextLine(pct)))
     }

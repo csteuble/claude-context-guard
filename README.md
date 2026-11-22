@@ -22,6 +22,8 @@ What it does:
 
 9. **One message per turn** (1.0.21, Chris 2026-11-21, the guard behind his rule "One message per turn, and it comes last"): in a main-loop turn, text the model writes before a tool call is held back (never shown, never recorded) and handed back to the model beside that tool's result, with the order to put what he needs in the turn's one message at the end. What goes out before the tools: the first `Working on X, about N min` line of the turn (later ones are dropped), the auto compact's start line, and the reply to a message he typed while the turn ran. To know whether a tool call follows, a step's text is kept until the step shows a tool call or its stop, so the last message appears whole, not word by word. When anything came before the reply in a turn, a line of sixteen heavy dashes is stamped above it (his pick: "some sort of visual break ... it all blends"). Held text in a turn that ends with no last message is shown beneath its end. The whole message `One message off` stores a flag that switches the guard off in every session, with no release; `One message on` returns it. Hooks: `turn.start`, `turn.step` (a streaming hook), `tool.call` (every tool, for the note), `turn.complete`.
 
+10. **No context line while P40 is on** (1.0.23, Chris 2026-11-22): a session that compacts by itself no longer needs its fill shown on every reply, so the context line order (the `Context NN% ▓▓▓░░░░░░░` line that opened every reply since 1.0.13) rides beside his message only while the P40 switch is off. **Tied to the same switch, so it comes back with one message:** `P40 off` brings back the context line and the old warning boxes in every session, with no release; `P40 on` takes both away again. `CC` still gives the number any time. The first standing rule now reads "The TLDR line first ... If the mod hands you a context line that turn, that line goes above it", so it holds in both states.
+
 ## Changing the rules
 
 Never edit `Standing Rules.md` or the baked copy by hand. Since 1.0.8 the one source is the STANDING RULES section of Chris's Global Memory (`C:\HomeInnovation\000 VAULT\_System\Global Memory.md`); the vault script `Check Rules Copies.py --push "<what changed>"` writes both files from it, bumps the version, pushes to `main`, and updates the PC install. Every new session picks up `Standing Rules.md` at start; the baked copy changing makes each rules edit a code change (run the tests and the delivery check).
@@ -38,10 +40,11 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Checks
 
-`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 50 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
+`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 51 tests (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
 
 ## Versions
 
+- 1.0.23 (2026-11-22): no context line while P40 is on (item 10); `P40 off` brings it back with the old warning boxes; the first standing rule reworded to hold in both states; the P40 resume text no longer demands the context line; one test added (51 total).
 - 1.0.22 (2026-11-21): no change in behavior. Pushed after this PC downloaded 1.0.21 (18:57), so every open session reloads into the guard.
 - 1.0.21 (2026-11-21): the one-message guard (item 9): text before a tool call is held back, one working line per turn, the break above the reply, and the `One message off` / `One message on` switch; the context line order now says the line leads the one message; tested first in a throwaway session as a separate copy; seven tests added (50 total).
 - 1.0.20 (2026-11-21): no change in behavior. Pushed a minute after 1.0.19 so open sessions reload again and fetch the new rules: the 1.0.19 reload ran while GitHub's raw copy of `Standing Rules.md` still served the old text.
