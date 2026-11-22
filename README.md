@@ -42,6 +42,7 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Versions
 
+- 1.0.22 (2026-11-21): no change in behavior. Pushed after this PC downloaded 1.0.21 (18:57), so every open session reloads into the guard.
 - 1.0.21 (2026-11-21): the one-message guard (item 9): text before a tool call is held back, one working line per turn, the break above the reply, and the `One message off` / `One message on` switch; the context line order now says the line leads the one message; tested first in a throwaway session as a separate copy; seven tests added (50 total).
 - 1.0.20 (2026-11-21): no change in behavior. Pushed a minute after 1.0.19 so open sessions reload again and fetch the new rules: the 1.0.19 reload ran while GitHub's raw copy of `Standing Rules.md` still served the old text.
 - 1.0.19 (2026-11-21): STANDING RULES change only: one message per turn, last (the answer no longer goes out before the tool calls).
