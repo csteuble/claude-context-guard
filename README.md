@@ -48,6 +48,7 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Versions
 
+- 1.0.25 (2026-11-22): no change in behavior. Pushed after this PC downloaded 1.0.24 (14:57), so every open session reloads into it.
 - 1.0.24 (2026-11-22): the reply header (item 11: the line, his words in a quote bar, the reply) and the full-message row (item 12: the `full_message` tool); the "NO GO IN THIS MESSAGE" line that rode every message of his with no go word is removed (Chris's ruling of 2026-11-22, "I guess you can pull it"; its history, the watch on "acted without a go", and how to put it back are in the vault note `No Go Line - History And Watch.md`); while P40 is on, the box after an auto-compaction reads "Auto-compacted at NN percent before P40 could. Stay in this session. Nothing to do." and the summary orders a re-read of Global Memory (item 3); a subagent's own compaction no longer pops that box or stores a fire point; the companion plugin `context-guard-box` 0.1.0 (item 13) closes the auto compact box when its minute is up. 67 tests, plus 4 for the companion (on the `box` branch).
 - 1.0.23 (2026-11-22): no context line while P40 is on (item 10); `P40 off` brings it back with the old warning boxes; the first standing rule reworded to hold in both states; the P40 resume text no longer demands the context line; one test added (51 total).
 - 1.0.22 (2026-11-21): no change in behavior. Pushed after this PC downloaded 1.0.21 (18:57), so every open session reloads into the guard.
