@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { OMT_QUOTE_MAX, omtFullHeader, omtHeader } from '../hooks/register'
 
 const usage = (percent: number | undefined, window = 200_000) => ({
   value: {
@@ -151,6 +152,28 @@ test('a stored fire point does not move the warnings', async ($, on) => {
   expect(h.asked.length).toBe(3)
 })
 
+test('with P40 on, an auto-compaction says to stay (no handoff), keeps the two buttons, and orders the re-read of Global Memory', async ($, on) => {
+  let seen: string | undefined
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 81, onCompact: i => { seen = i } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(81))
+  const before = h.asked.length
+  await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  expect(h.asked.length).toBe(before + 1)
+  expect(h.asked[before]).toBe('Auto-compacted at 81 percent before P40 could. Stay in this session. Nothing to do.')
+  expect(h.buttons[before]).toEqual(['Sure fucked that up', 'Fuck fuck fuck fuck'])
+  expect(seen).toContain('FIRST: Before the first reply after this compaction, read ALL of Global Memory')
+  expect(seen).toContain('STANDING RULES (kept through compaction)')
+  expect((h.store.firePoints as Record<string, number>)['200000']).toBe(81)
+  // A compaction that is not the app's own (a typed /compact) gets neither the box nor the re-read order.
+  let typed: string | undefined
+  h.asked.length = 0
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }], instructions: 'x' } as never).catch(() => undefined)
+  typed = seen
+  expect(h.asked.some(q => q.startsWith('Auto-compacted'))).toBe(false)
+  void typed
+})
+
 test('an auto-compaction records the fire point, scolds as before, pins the rules, and re-arms the warnings', async ($, on) => {
   let seen: string | undefined
   const h = harness(on, { fetchOk: true, onCompact: i => { seen = i } })
@@ -161,6 +184,8 @@ test('an auto-compaction records the fire point, scolds as before, pins the rule
   await $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
   expect(seen).toContain('STANDING RULES (kept through compaction)')
   expect(seen).toContain('STANDING RULES FROM THE REPO')
+  // P40 is off in this harness: the old words, and no re-read order.
+  expect(String(seen).includes('FIRST: Before the first reply')).toBe(false)
   expect(h.asked.length).toBe(4)
   expect(h.asked[3]).toBe(
     'Auto-compacted at 81 percent. WE BLEW IT: the warnings were there and nobody wrapped up. I am dumber now. Say handoff and start a new session immediately.',
@@ -183,44 +208,40 @@ test('a manual compaction pins the rules but records nothing and does not scold'
   expect(h.store.firePoints).toBe(undefined)
 })
 
+test('a subagent compacting by itself pops no box, stores no fire point, adds no pin, and leaves the lines alone', async ($, on) => {
+  let told: string | undefined = 'unset'
+  const h = harness(on, { fetchOk: true, onCompact: i => { told = i } })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(62))
+  expect(h.asked.length).toBe(1)
+  await $.session.compact({ trigger: 'auto', agentId: 'agent-1', messages: [{ role: 'user', text: 'hi', toolUses: [] }] } as never)
+  expect(h.asked.length).toBe(1)
+  expect(h.store.firePoints).toBe(undefined)
+  expect(told).toBe(undefined)
+  // The 60 percent line did not arm again.
+  await $.session.measure(measure(63))
+  expect(h.asked.length).toBe(1)
+})
+
 test('the rules ride beside a typed prompt, from the repo when the fetch works', async ($, on) => {
   const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const r = await $.prompt.submit({ text: 'hello' })
   expect(r.context?.[0]).toContain('STANDING RULES FROM THE REPO')
-  expect(r.context?.length).toBe(3)
-  expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
-  expect(r.context?.[2]).toContain('CONTEXT LINE (context-guard)')
+  expect(r.context?.length).toBe(2)
+  expect(r.context?.[1]).toContain('CONTEXT LINE (context-guard)')
   expect(h.asked.length).toBe(0)
 })
 
-test('the no-go line rides only when the message holds no go word and is not a bare option number', async ($, on) => {
+test('no message carries a no-go line: an order, a question, a statement, and a yes all get the rules and the context line only', async ($, on) => {
   harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for (const text of ['Thoughts?', 'I want the e2 ultra', 'can you check the log', 'going to lunch']) {
-    const r = await $.prompt.submit({ text })
-    expect(r.context?.length).toBe(3)
-    expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
-  }
-  for (const text of ['go', 'Execute', 'do it', 'fix it please', 'change it', 'build it out', 'write it', '1', ' 2. ', 'Okay, go ahead']) {
+  // Chris 2026-11-22: "I guess you can pull it". The line rode his plain orders ("make sure you put that back in").
+  for (const text of ['Thoughts?', 'I want the e2 ultra', 'can you check the log', 'make sure you put that back in', 'Send plate 2', 'go', '1', 'Yeah, put them up', 'No', 'that looks fine to me']) {
     const r = await $.prompt.submit({ text })
     expect(r.context?.length).toBe(2)
     expect(r.context?.[1]).toContain('CONTEXT LINE (context-guard)')
-  }
-})
-
-test('a message that opens with a yes (his answer to an offer line) carries no no-go line', async ($, on) => {
-  harness(on, { fetchOk: true })
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  for (const text of ['yes', 'Yes.', 'Yeah, put them up', 'yep', 'Yup!', 'Do that', 'please do', ' sure ', 'OK', 'Okay.']) {
-    const r = await $.prompt.submit({ text })
-    expect(r.context?.length).toBe(2)
-    expect(r.context?.[1]).toContain('CONTEXT LINE (context-guard)')
-  }
-  for (const text of ['yesterday it broke', 'No', 'ok so what happened', 'sure it is safe?', 'that looks fine to me']) {
-    const r = await $.prompt.submit({ text })
-    expect(r.context?.length).toBe(3)
-    expect(r.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
+    expect((r.context ?? []).some(c => c.includes('NO GO'))).toBe(false)
   }
 })
 
@@ -285,7 +306,10 @@ test('"CC TEST" pops the 60 percent box once with the current percent, and nothi
 test('the tool registers as deferred, so it is announced when the mod attaches mid-conversation', async ($, on) => {
   const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  expect(h.registered.length).toBe(3)
+  expect(h.registered.length).toBe(4)
+  // The full-message row (item 15): the fourth tool, deferred the same way.
+  expect(h.registered[3].name).toBe('full_message')
+  expect(h.registered[3].isDeferred).toBe(true)
   expect(h.registered[0].name).toBe('context_fill')
   expect(h.registered[0].isDeferred).toBe(true)
   // P40 (item 10): the second tool, deferred the same way.
@@ -391,10 +415,9 @@ test('with P40 on a typed message carries no context line order; "P40 off" bring
   const hasLine = (r: { context?: readonly string[] }) => (r.context ?? []).some(c => c.startsWith('CONTEXT LINE'))
   const quiet = await $.prompt.submit({ text: 'hello there' })
   expect(hasLine(quiet)).toBe(false)
-  // The rules and the no-go line still ride.
+  // The rules still ride, alone.
   expect(quiet.context?.[0]).toContain('STANDING RULES FROM THE REPO')
-  expect(quiet.context?.[1]).toBe('NO GO IN THIS MESSAGE: answer, record, or show only.')
-  expect(quiet.context?.length).toBe(2)
+  expect(quiet.context?.length).toBe(1)
 
   await $.prompt.submit({ text: 'P40 off' })
   expect(h.store.p40Auto).toBe(false)
@@ -734,8 +757,278 @@ test('one message: a message he types while the turn runs lets one reply through
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.turn.start({ text: 'build it', turnId: 't1' } as never)
   await $.prompt.submit({ text: 'how long will that take?' })
-  expect((await runStep($ as never, 0)).text).toBe('About five minutes.')
+  // Item 14: the reply it lets through carries that message's words.
+  expect((await runStep($ as never, 0)).text).toBe(`${BREAK}\n\n> *how long will that take?*\n\nAbout five minutes.`)
   expect((await runStep($ as never, 1)).text).toBe('')
+})
+
+// ---------- The reply header (item 14) ----------
+
+test('reply header: a typed-message turn gets the line and then the quote; words that clean to nothing keep the bare line rule', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[TOOL, STOP('tool_use')], [T('After a tool.'), STOP('end_turn')], [T('No tools.'), STOP('end_turn')], [TOOL, STOP('tool_use')], [T('Blank words.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'check it', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'check it', turnId: 't1' } as never)
+  await runStep($ as never, 0)
+  const r = await runStep($ as never, 1)
+  expect(r.text).toBe(`${BREAK}\n\n> *check it*\n\nAfter a tool.`)
+  // The line is there once, never doubled.
+  expect(r.text.split(BREAK).length).toBe(2)
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: ' \n ', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '', turnId: 't2' } as never)
+  expect((await runStep($ as never, 2)).text).toBe('No tools.')
+  await $.turn.complete(turnEnd())
+  await $.prompt.submit({ text: ' \n ', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: '', turnId: 't3' } as never)
+  await runStep($ as never, 3)
+  expect((await runStep($ as never, 4)).text).toBe(`${BREAK}\n\nBlank words.`)
+})
+
+const HEAD = (words: string) => `> *${words}*\n\n`
+// The whole header a reply carries: the line, a blank line, then the quote.
+const FULL = (words: string) => `${BREAK}\n\n${HEAD(words)}`
+
+test('reply header: omtHeader cleans, escapes, and cuts his words', async () => {
+  expect(OMT_QUOTE_MAX).toBe(100)
+  expect(omtHeader('Yeah, I would. Can I have a "…" at the end?')).toBe(HEAD('Yeah, I would. Can I have a "…" at the end?'))
+  // Newlines and tabs become one space; markdown characters show literally.
+  expect(omtHeader('  first line\n\n\tsecond *bold* _it_ `code`  ')).toBe(HEAD('first line second \\*bold\\* \\_it\\_ \\`code\\`'))
+  expect(omtHeader('# heading [a](b) <x> ~y~ a|b \\')).toBe(HEAD('\\# heading \\[a\\](b) \\<x\\> \\~y\\~ a\\|b \\\\'))
+  expect(omtHeader('- a list item')).toBe(HEAD('\\- a list item'))
+  expect(omtHeader('> a quote')).toBe(HEAD('\\> a quote'))
+  // Empty after cleaning: no header (the turn keeps the bare line rule).
+  expect(omtHeader(' \n\t ')).toBe('')
+  // One line, so the single quote prefix holds it all.
+  expect(omtHeader('a\n> b\n\nc').split('\n').length).toBe(3)
+  // Cut at 100 characters, at a word boundary in the last 20, with "…".
+  const long = `${'word '.repeat(19)}abcdefghijklmnopqrstuvwxyz and more`
+  expect(omtHeader(long)).toBe(HEAD(`${'word '.repeat(19).trimEnd()}…`))
+  // A space right after character 100 is a boundary too.
+  expect(omtHeader(`${'d'.repeat(100)} more`)).toBe(HEAD(`${'d'.repeat(100)}…`))
+  // No boundary in the last 20: a hard cut at 100.
+  const solid = `${'a'.repeat(70)} ${'b'.repeat(60)}`
+  expect(omtHeader(solid)).toBe(HEAD(`${'a'.repeat(70)} ${'b'.repeat(29)}…`))
+  // Exactly 100: nothing cut.
+  expect(omtHeader('c'.repeat(100))).toBe(HEAD('c'.repeat(100)))
+})
+
+test('reply header: a quote the model wrote itself is not doubled, and the line still goes above it', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T(`${HEAD('again')}The model wrote the quote.`), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'again', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'again', turnId: 't1' } as never)
+  const r = await runStep($ as never, 0)
+  expect(r.text).toBe(`${FULL('again')}The model wrote the quote.`)
+  expect(r.text.split('> *again*').length).toBe(2)
+})
+
+test('reply header: a plain typed turn with no tools gets the header with his words', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('A plain reply, no tools.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'is it done?', origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: 'is it done?', turnId: 't1' } as never)
+  const r = await runStep($ as never, 0)
+  expect(r.text).toBe(`${FULL('is it done?')}A plain reply, no tools.`)
+  expect(r.result.answer).toBe(`${FULL('is it done?')}A plain reply, no tools.`)
+})
+
+test('reply header: a turn with tools before the reply gets it once, and a break the model wrote is replaced, never doubled', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [
+    [T('Working on it, about 2 min.'), TOOL, STOP('tool_use')],
+    [T('**TLDR:** '), T('done.'), STOP('end_turn')],
+    [TOOL, STOP('tool_use')],
+    [T(BREAK), T('\n\nThe model wrote the break itself.'), STOP('end_turn')],
+    [T(`${FULL('fix it')}The model wrote the whole header.`), STOP('end_turn')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'build it', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'build it', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Working on it, about 2 min.')
+  const last = await runStep($ as never, 1)
+  expect(last.text).toBe(`${FULL('build it')}**TLDR:** done.`)
+  expect(last.out.filter(c => c.kind === 'text').length).toBe(2)
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: 'again', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'again', turnId: 't2' } as never)
+  await runStep($ as never, 2)
+  expect((await runStep($ as never, 3)).text).toBe(`${FULL('again')}The model wrote the break itself.`)
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: 'fix it', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'fix it', turnId: 't3' } as never)
+  expect((await runStep($ as never, 4)).text).toBe(`${FULL('fix it')}The model wrote the whole header.`)
+})
+
+test('reply header: a message typed mid-turn puts its words on the reply it lets through; the closing message carries the first', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('About five minutes.'), TOOL, STOP('tool_use')], [T('All built.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'build it', origin: { kind: 'sdk' } } as never)
+  await $.turn.start({ text: 'build it', turnId: 't1' } as never)
+  await $.prompt.submit({ text: 'how long\nwill that take?', origin: { kind: 'bridge' } } as never)
+  expect((await runStep($ as never, 0)).text).toBe(`${FULL('how long will that take?')}About five minutes.`)
+  expect((await runStep($ as never, 1)).text).toBe(`${FULL('build it')}All built.`)
+})
+
+// ---------- The full-message row (item 15) ----------
+
+const LONG =
+  'So here is a long message that I dictated on my phone and it rattles on well past the one hundred characters the quote line shows over a reply.'
+const ROW: Piece = { kind: 'tool', index: 1, id: 'tu9', name: 'mcp__context-guard__full_message' }
+const hasRowOrder = (r: { context?: readonly string[] }) => (r.context ?? []).some(c => c.startsWith('FULL MESSAGE ROW (context-guard)'))
+
+test('full message row: only a message he typed that is longer than the quote gets the order', async ($, on) => {
+  harness(on, { fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(hasRowOrder(await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never))).toBe(true)
+  expect(hasRowOrder(await $.prompt.submit({ text: 'is it done?', origin: { kind: 'bridge' } } as never))).toBe(false)
+  // A message another session sent is not his words: no quote, so no row.
+  expect(hasRowOrder(await $.prompt.submit({ text: LONG, origin: { kind: 'peer' } } as never))).toBe(false)
+  // Exactly at the cut: nothing is cut, so no row.
+  expect(hasRowOrder(await $.prompt.submit({ text: 'x'.repeat(OMT_QUOTE_MAX), origin: { kind: 'bridge' } } as never))).toBe(false)
+  expect(hasRowOrder(await $.prompt.submit({ text: 'x'.repeat(OMT_QUOTE_MAX + 1), origin: { kind: 'bridge' } } as never))).toBe(true)
+})
+
+test('full message row: the marker above the row becomes the quote, the tool returns his whole message, and the reply is not stamped again', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[TOOL, STOP('tool_use')], [T('QUOTE'), ROW, STOP('tool_use')], [T('**TLDR:** done.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't1' } as never)
+  await runStep($ as never, 0)
+  const row = await runStep($ as never, 1)
+  expect(row.text).toBe(omtFullHeader(LONG).trimEnd())
+  expect(row.out.map(c => c.kind).join(',')).toBe('text,tool,stop')
+  const r = (await $.tool.call({ tool: 'mcp__context-guard__full_message' } as never)) as { result?: unknown; context?: unknown }
+  expect(r.result).toBe(LONG)
+  // The marker is never held text.
+  expect(r.context).toBe(undefined)
+  const last = await runStep($ as never, 2)
+  expect(last.text).toBe('**TLDR:** done.')
+  expect((await $.turn.complete(turnEnd())).text).toBe('ok')
+})
+
+test('full message row: a long message typed mid-turn gets its own quote and row; the closing reply keeps the first message', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('QUOTE'), ROW, STOP('tool_use')], [T('About five minutes.'), TOOL, STOP('tool_use')], [T('All built.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'build it', origin: { kind: 'sdk' } } as never)
+  await $.turn.start({ text: 'build it', turnId: 't1' } as never)
+  expect(hasRowOrder(await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never))).toBe(true)
+  expect((await runStep($ as never, 0)).text).toBe(omtFullHeader(LONG).trimEnd())
+  const r = (await $.tool.call({ tool: 'mcp__context-guard__full_message' } as never)) as { result?: unknown }
+  expect(r.result).toBe(LONG)
+  expect((await runStep($ as never, 1)).text).toBe('About five minutes.')
+  expect((await runStep($ as never, 2)).text).toBe(`${omtFullHeader('build it')}All built.`)
+})
+
+test('full message row: a marker with no row is dropped, never held; a row with no marker leaves the quote on the reply', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('QUOTE'), TOOL, STOP('tool_use')], [ROW, STOP('tool_use')], [T('Done.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('')
+  const none = (await $.tool.call({ tool: 'mcp__x__y' } as never)) as { context?: unknown }
+  expect(none.context).toBe(undefined)
+  expect((await runStep($ as never, 1)).text).toBe('')
+  expect((await runStep($ as never, 2)).text).toBe(`${omtFullHeader(LONG)}Done.`)
+})
+
+test('full message row: called with none of his words, or by a subagent, it says so', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'a turn nobody typed', turnId: 't1' } as never)
+  const r = (await $.tool.call({ tool: 'mcp__context-guard__full_message' } as never)) as { result?: unknown }
+  expect(r.result).toBe('There is no message of his to show for this reply.')
+  const sub = (await $.tool.call({ tool: 'mcp__context-guard__full_message', agentId: 'a1' } as never)) as { result?: unknown }
+  expect(sub.result).toBe('Refused: only the main conversation.')
+})
+
+test('reply header: a turn started without a typed message gets the bare line only when something came before', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [
+    [T('Nothing before me.'), STOP('end_turn')],
+    [TOOL, STOP('tool_use')],
+    [T('After a tool.'), STOP('end_turn')],
+    [T('A notification answer.'), STOP('end_turn')],
+    [T('A plugin answer.'), STOP('end_turn')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  // The mod's own auto compact prompt (a plugin origin, and its own opening words) is never his.
+  await $.prompt.submit({ text: 'P40 AUTO COMPACT (context-guard). This session has reached a context line.' })
+  await $.turn.start({ text: 'P40 AUTO COMPACT (context-guard). This session has reached a context line.', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Nothing before me.')
+  await $.turn.complete(turnEnd())
+
+  await $.turn.start({ text: '', turnId: 't2' } as never)
+  await runStep($ as never, 1)
+  expect((await runStep($ as never, 2)).text).toBe(`${BREAK}\n\nAfter a tool.`)
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: 'Task done.', origin: { kind: 'task-notification' } } as never)
+  await $.turn.start({ text: 'Task done.', turnId: 't3' } as never)
+  expect((await runStep($ as never, 3)).text).toBe('A notification answer.')
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: 'hello from a mod', origin: { kind: 'plugin', name: 'other' } } as never)
+  await $.turn.start({ text: 'hello from a mod', turnId: 't4' } as never)
+  expect((await runStep($ as never, 4)).text).toBe('A plugin answer.')
+})
+
+test('reply header: the auto compact prompt the mod submits itself carries no words', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 10 })
+  omt(on, [[T('Context 71%. Auto compact is starting now.'), TOOL, STOP('tool_use')], [T('Queued.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure(measure(71))
+  await clock.advance(1_100)
+  const go = sentGo(h)
+  expect(go.length).toBe(1)
+  // A mod's own $.prompt.submit skips its own prompt.submit hook (no rules rode beside it), so the hook never sees
+  // it; the turn it starts matches none of his typed messages.
+  expect((go[0].context ?? []).some(c => c.includes('STANDING RULES FROM THE REPO'))).toBe(false)
+  await $.turn.start({ text: go[0].text, turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Context 71%. Auto compact is starting now.')
+  expect((await runStep($ as never, 1)).text).toBe(`${BREAK}\n\nQueued.`)
+})
+
+test('reply header: a shortcut reply gets none', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('Muted.'), STOP('end_turn')], [T('The one-message guard is on.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'mute', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'mute', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Muted.')
+  await $.turn.complete(turnEnd())
+  await $.prompt.submit({ text: 'One message on', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'One message on', turnId: 't2' } as never)
+  expect((await runStep($ as never, 1)).text).toBe('The one-message guard is on.')
+})
+
+test('reply header: guard off gets none, and a subagent step is untouched', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('Guard off reply.'), STOP('end_turn')], [T('Subagent reply.'), STOP('end_turn')], [T('Main reply.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'One message off' })
+  await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'hello', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('Guard off reply.')
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: 'One message on' })
+  await $.prompt.submit({ text: 'hello again', origin: { kind: 'composer' } } as never)
+  await $.turn.start({ text: 'hello again', turnId: 't2' } as never)
+  expect((await runStep($ as never, 1, 'agent-1')).text).toBe('Subagent reply.')
+  expect((await runStep($ as never, 2)).text).toBe(`${FULL('hello again')}Main reply.`)
 })
 
 test('one message: held text with no last message after it is shown beneath the end of the turn', async ($, on) => {

@@ -74,6 +74,19 @@
 //    needs its fill shown on every reply, so the context line order (1.0.13) rides beside his message only
 //    while the P40 switch is off. "P40 off" brings back the line together with the old warning boxes, in
 //    every session, with no release; "P40 on" takes both away again. "CC" still gives the number any time.
+// 14. The reply header (Chris 2026-11-22: he reads on his phone, queues several messages, and cannot tell which
+//    reply answers which; his words: "horizontal line, no spacing, no blank lines at all, and then the text that
+//    it's addressing, and then a blank line, and maybe that text is italicized, and then your response"). The form
+//    is a quote bar, not the heavy line: his phone shows a full gap after any kind of line break under the line
+//    (his screenshot of 2026-11-22), so he picked his words in a markdown quote, in italics, with no line above.
+//    A reply to a message he typed opens with "> *his words*" (one line, cut to 100 characters with "…"), then
+//    one blank line. Words that clean to nothing get the bare line rule of item 12. The turn's last message carries
+//    the words of the message that started the turn, always, even with nothing before it; the reply let through
+//    for a message typed while the turn ran carries that message's words. His typed message is one that reaches
+//    prompt.submit from the composer, the phone bridge, or the desktop app's SDK host, and is not a slash command,
+//    a meta prompt, a shortcut, or the mod's own auto compact prompt (a plugin origin). A turn with none of his
+//    words (the mod's prompt, a task notification) keeps the bare line of item 12. Shortcut replies, the working
+//    line, the auto compact start line, the guard off, and subagents: no header, as before.
 import type { EngineInterface, Register, TurnStepChunk } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -120,6 +133,18 @@ const RULES_BROKEN_BUTTONS = ['Got it', 'Thanks'] as const
 const COMPACTED_TEXT = (p: number) =>
   `Auto-compacted at ${p} percent. WE BLEW IT: the warnings were there and nobody wrapped up. I am dumber now. Say handoff and start a new session immediately.`
 
+// While P40 is on (Chris "1", 2026-11-22): the app compacting the main conversation by itself means P40 missed,
+// and a handoff is the wrong advice. "P40 off" keeps the old words above.
+export const COMPACTED_P40_TEXT = (p: number) =>
+  `Auto-compacted at ${p} percent before P40 could. Stay in this session. Nothing to do.`
+// The same case: no notes file and no P40 RESUME came before it, so the summary also carries the order to re-read
+// Global Memory, as a P40 compaction's does.
+export const AUTO_REREAD =
+  'COMPACTION INSTRUCTION FROM THE context-guard PLUGIN (the app compacted by itself): the summary MUST also ' +
+  'hold this line, word for word, right above its "STANDING RULES (kept through compaction)" section: FIRST: ' +
+  'Before the first reply after this compaction, read ALL of Global Memory (the rules file the startup ' +
+  'instructions name; a compaction drops it).\n\n'
+
 const RULES_BROKEN_BOX = 'RULES BROKEN\nStart a new session or tell Claude to fix it.'
 
 const PIN_HEADER =
@@ -161,8 +186,9 @@ const P40_ASK_MS = 60_000
 const P40_BUTTONS = ['Compact now', 'Wait'] as const
 export const P40_ASK_TEXT = (p: number) => `Context ${p}%. Auto compact will begin in 1 minute.`
 export const P40_START_LINE = (p: number) => `Context ${p}%. Auto compact is starting now.`
+const P40_GO_HEAD = 'P40 AUTO COMPACT (context-guard).'
 const P40_GO_PROMPT = (p: number) =>
-  'P40 AUTO COMPACT (context-guard). This session has reached a context line and compacts in place now. ' +
+  `${P40_GO_HEAD} This session has reached a context line and compacts in place now. ` +
   `Start your reply with exactly this line and nothing before it: ${P40_START_LINE(p)}\n` +
   "Then write your notes file and call the compact_now tool, exactly as that tool's description says (load it " +
   'with ToolSearch first), and end the turn with one short line. Do nothing else in this turn: no other work ' +
@@ -191,6 +217,50 @@ const OMT_SWITCH_ORDER = (reply: string) =>
 export const OMT_WORKING_LINE = /^\s*(?:[^\n]*Context [\d#]+%[^\n]*\n\s*)?Working on [^\n]{1,200}\s*$/
 // The break the mod stamps above the reply (his pick, 2026-11-21): sixteen heavy lines, no words.
 export const OMT_BREAK = '━━━━━━━━━━━━━━━━'
+// The reply header (item 14): his words in italics in a quote bar, one line, then one blank line; "" when his
+// words clean to nothing. Cleaning makes it one line and the escapes keep it inside the quote and the italics.
+export const OMT_QUOTE_MAX = 100
+export function omtHeader(words: string): string {
+  let chars = Array.from(words.replace(/\s+/g, ' ').trim())
+  const isCut = chars.length > OMT_QUOTE_MAX
+  if (isCut) {
+    // At a word boundary when one is in the last 20 characters (a space right after the cut counts).
+    const space = chars[OMT_QUOTE_MAX] === ' ' ? OMT_QUOTE_MAX : chars.lastIndexOf(' ', OMT_QUOTE_MAX - 1)
+    chars = chars.slice(0, space >= OMT_QUOTE_MAX - 20 ? space : OMT_QUOTE_MAX)
+  }
+  // Counted on what he sees, so a cut never splits an escape. A leading ">" is already escaped by the first pass.
+  const said = chars.join('').trimEnd().replace(/[\\*_`[\]<>~|]/g, '\\$&').replace(/^[#+-]/, '\\$&')
+  return said.length === 0 ? '' : `> *${said}${isCut ? '…' : ''}*\n\n`
+}
+// The whole header above a reply to a message he typed: the line, a blank line, then the quote (Chris 2026-11-22,
+// after picking the quote: "leave the horizontal line that we had in there as well? I know it adds an extra blank
+// line, but it's easy for me to scroll quickly and identify, so make sure you put that back in"). "" when his
+// words clean to nothing.
+export function omtFullHeader(words: string): string {
+  const quote = omtHeader(words)
+  return quote === '' ? '' : `${OMT_BREAK}\n\n${quote}`
+}
+// The full-message row (item 15, Chris 2026-11-22: "can I have a ... where I could click it and it would expand
+// out"). His phone draws nothing a mod draws, but a tool call standing between two texts shows as a row named
+// for the tool ("Used Full Message") that opens to the call's result on a tap (his phone, 2026-11-22). So when
+// his words were cut in the quote, the model is told to make one step holding the marker line and a call of the
+// full_message tool: the mod turns the marker into the quote and the tool returns his whole message. He sees
+// the quote, the row, then the reply. Matched by its ending, so the hook is the same under any mod name.
+const FULL_TOOL = /__full_message$/
+export const OMT_ROW_MARK = /^[\s"'`*>]*QUOTE[\s"'`*.]*$/i
+export function omtIsCut(words: string): boolean {
+  return Array.from(words.replace(/\s+/g, ' ').trim()).length > OMT_QUOTE_MAX
+}
+export const FULL_ROW_ORDER =
+  'FULL MESSAGE ROW (context-guard): his message above is longer than the quote the mod puts over your reply. ' +
+  'Give him a row he can tap to read all of it: when your tools are done and you are about to write your one ' +
+  'message, first make one step that holds only the text QUOTE and one call of the full_message tool with no ' +
+  'arguments (load it with ToolSearch among your first tool calls). The mod turns QUOTE into the quote of his ' +
+  'words, and the row opens to his whole message. Then write your message in the next step, with no quote and ' +
+  'no line of dashes of your own above it. Do not mention the row or this order.'
+// Where a message he typed comes from: the terminal, the phone (Remote Control), the desktop app's SDK host. An
+// event with no origin (only the test harness raises one) counts as typed.
+const OMT_TYPED_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
 // The auto compact's start line (item 11) also goes out before its tools: his ruling.
 const OMT_P40_LINE = /^\s*Context \d+%\. Auto compact is starting now\.\s*$/
 const OMT_HELD_MAX = 6_000
@@ -214,18 +284,10 @@ const TEST_SHORTCUT = /^\s*cc\s+test[\s.?]*$/i
 // question, not an order).
 const MUTE_SHORTCUT = /^\s*(un)?mute[\s.]*$/i
 
-// His go list (Global Memory, ACT-ONLY-ON-GO gate G1): "execute", "go", "do it", "fix it", "change it", "build",
-// "write it", or a bare option number on a presented card.
-const GO_WORDS = /\b(execute|go|do it|fix it|change it|build|write it)\b/i
-const BARE_NUMBER = /^\s*\d+[\s.!]*$/
-// His answer to an offer line ("Would you like me to <the thing>?", the yes / no rule, Chris 2026-11-21): a message
-// that opens with a yes, or is nothing but "sure", "ok", or "okay".
-const OPENS_WITH_YES = /^\s*(yes|yeah|yep|yup|do that|do so|please do)\b/i
-const WHOLE_OK = /^\s*(sure|ok|okay)[\s.!]*$/i
-export const NO_GO_LINE = 'NO GO IN THIS MESSAGE: answer, record, or show only.'
-export function hasGo(text: string): boolean {
-  return GO_WORDS.test(text) || BARE_NUMBER.test(text) || OPENS_WITH_YES.test(text) || WHOLE_OK.test(text)
-}
+// The "NO GO IN THIS MESSAGE" line is gone (item 16, Chris 2026-11-22: "I guess you can pull it"). It rode every
+// message that held none of his go words, so it could not tell a plain order from a statement and rode his
+// orders too. The standing rules still carry "A question is a question: answer it and stop." If sessions start
+// acting on his questions, read `No Go Line - History And Watch.md` in the Vault & Memory project folder first.
 
 // The setter's command, one PowerShell line with no double quotes (argv goes through Windows quoting): it finds
 // the installed mod through installed_plugins.json and runs tools\Set Mute.ps1 with on or off.
@@ -271,6 +333,65 @@ let omtPass = 0
 // working line has gone out.
 let omtBefore = false
 let omtWorked = false
+// The reply header (item 14): his words for this turn's last message (undefined: the turn answers none of his
+// messages); his words for each reply owed to a message typed mid-turn (undefined for one he did not type); the
+// words of a message submitted while idle, until its turn starts; and his recent typed messages, so a turn that
+// starts later with one of them (a message queued past the end of a turn) still finds it.
+let omtWords: string | undefined
+let omtPassWords: Array<string | undefined> = []
+let omtStartWords: string | null | undefined
+let omtTyped: string[] = []
+// Item 15: the words whose quote already went out above a full-message row, so their reply is not stamped again.
+let omtRowFor: string | undefined
+// The words the reply now due answers: the oldest message typed mid-turn that is still owed a reply, else the
+// turn's own.
+const omtDueWords = (): string | undefined => (omtPass > 0 ? omtPassWords[0] : omtWords)
+
+function omtTypedWords(e: { text: string; origin?: { kind: string } }, isShortcut: boolean): string | undefined {
+  if (isShortcut || e.text.startsWith(P40_GO_HEAD)) return undefined
+  const kind = e.origin?.kind
+  // Words that clean to nothing count as none: the turn keeps the bare line rule.
+  if (kind !== undefined && !OMT_TYPED_ORIGINS.has(kind)) return undefined
+  return omtHeader(e.text) === '' ? undefined : e.text
+}
+
+function omtForget(words: string): void {
+  const i = omtTyped.indexOf(words.trim())
+  if (i >= 0) omtTyped.splice(i, 1)
+}
+
+// The header goes above the first text chunk of a message, never doubled: the line alone for a turn with none of
+// his words, the line and then the quote of his words for a reply to a message he typed. Whatever part of it the
+// model wrote itself (its own line, the same quote, or both) is taken out first, and a message that already opens
+// with the whole header is left alone.
+function omtStamp(out: TurnStepChunk[], said: string, words: string | undefined): [TurnStepChunk[], string] {
+  const lead = said.trimStart()
+  const quote = words === undefined ? '' : omtHeader(words)
+  const header = quote === '' ? `${OMT_BREAK}\n\n` : `${OMT_BREAK}\n\n${quote}`
+  let rest = lead
+  if (rest.startsWith(OMT_BREAK)) {
+    if (quote === '') return [out, said]
+    rest = rest.slice(OMT_BREAK.length).trimStart()
+  }
+  const hadBreak = rest !== lead
+  if (quote !== '' && rest.startsWith(quote.trimEnd())) {
+    if (hadBreak) return [out, said]
+    rest = rest.slice(quote.trimEnd().length).trimStart()
+  }
+  const total = rest === lead ? 0 : said.length - rest.length
+  let cut = total
+  let isStamped = false
+  const stamped = out.map(c => {
+    if (c.kind !== 'text') return c
+    const drop = Math.min(cut, c.text.length)
+    cut -= drop
+    const text = c.text.slice(drop)
+    if (isStamped) return drop === 0 ? c : { ...c, text }
+    isStamped = true
+    return { ...c, text: header + text }
+  })
+  return [stamped, header + said.slice(total)]
+}
 
 function p40LogBeside(notes: string): void {
   const cut = Math.max(notes.lastIndexOf('/'), notes.lastIndexOf('\\'))
@@ -327,6 +448,9 @@ function omtEnd<R extends { text: string }>(result: R): R {
   const lost = omtDue.length > 0 || !omtSaid ? omtHeld : []
   omtRunning = false
   omtPass = 0
+  omtPassWords = []
+  omtWords = undefined
+  omtRowFor = undefined
   omtDue = []
   omtHeld = []
   return lost.length === 0 ? result : { ...result, text: lost.join('\n\n') }
@@ -561,6 +685,18 @@ export const register: Register = on => {
     } catch {
       // a test tool only
     }
+    // The full-message row (item 15), guarded the same way.
+    try {
+      await $.tool.register({
+        name: 'full_message',
+        description:
+          'Shows Chris a row he can tap to read the whole of his own message, when the quote over the reply was cut. Takes no arguments and returns his message. Call it only when a context-guard FULL MESSAGE ROW order says to, in a step of its own that holds only the text QUOTE and this one call; load it with ToolSearch first.',
+        inputSchema: { type: 'object', properties: {} },
+        isDeferred: true,
+      })
+    } catch {
+      // the row is an extra; the quote over the reply does not depend on it
+    }
     try {
       const u = await $.session.usage()
       if (await p40IsOn($)) {
@@ -589,7 +725,19 @@ export const register: Register = on => {
 
   // The standing rules ride beside every message Chris types; the shortcuts are read here too.
   on('prompt.submit', async ($, e, next) => {
-    if (e.command || e.isMeta) return next(e)
+    // Item 14: next(e) resolves once the turn this prompt starts has started (turn.start runs inside it), so the
+    // words wait in omtStartWords for that turn.start and are cleared after; null means none of his words.
+    const entering = async <R>(words: string | undefined, go: () => Promise<R>): Promise<R> => {
+      if (omtRunning) return go()
+      if (words !== undefined) omtTyped = [...omtTyped.slice(-19), words.trim()]
+      omtStartWords = words ?? null
+      try {
+        return await go()
+      } finally {
+        omtStartWords = undefined
+      }
+    }
+    if (e.command || e.isMeta) return entering(undefined, () => next(e))
     if (TEST_SHORTCUT.test(e.text)) {
       const { pct } = await currentFill($)
       askBox($, TIER_TEXT[0](pct ?? TIER_PCTS[0]), TIER_BUTTONS)
@@ -604,7 +752,12 @@ export const register: Register = on => {
       READOUT_SHORTCUT.test(e.text) || MUTE_SHORTCUT.test(e.text) || p40Switch !== null || omtSwitch !== null
     // One message per turn: a message he types while a turn is running gets its own reply, so the guard lets
     // the next text through.
-    if (omtRunning && !isShortcut) omtPass += 1
+    const typed = omtTypedWords(e, isShortcut)
+    if (omtRunning && !isShortcut) {
+      omtPass += 1
+      omtPassWords.push(typed)
+      if (typed !== undefined) omtTyped = [...omtTyped.slice(-19), typed.trim()]
+    }
     if (omtSwitch) {
       const guardOn = (omtSwitch[1] ?? '').toLowerCase() === 'on'
       let saved = true
@@ -647,7 +800,8 @@ export const register: Register = on => {
       context.push(P40_RIDE(p40RideNext))
       p40RideNext = undefined
     }
-    if (!isShortcut && !hasGo(e.text)) context.push(NO_GO_LINE)
+    // Item 15: a typed message longer than the quote gets the row that opens to all of it.
+    if (typed !== undefined && omtOn && omtIsCut(typed)) context.push(FULL_ROW_ORDER)
     if (READOUT_SHORTCUT.test(e.text)) {
       context.push(`${SHORTCUT_ORDER}BEGIN\n${await readout($)}\nEND`)
     }
@@ -660,7 +814,7 @@ export const register: Register = on => {
       const { pct } = await currentFill($)
       context.push(CONTEXT_LINE_ORDER(pct === undefined ? FIRST_CONTEXT_LINE : contextLine(pct)))
     }
-    return next({ ...e, context })
+    return entering(typed, () => next({ ...e, context }))
   })
 
   // The model's tool for "what's my context at".
@@ -712,6 +866,12 @@ export const register: Register = on => {
     }
   }).catch(() => ({ result: 'p40_test failed inside the mod; nothing was run.' }))
 
+  // The full-message row (item 15): the call's result is his whole message, which is what the row opens to.
+  on('tool.call', { tool: FULL_TOOL }, async (_, e) => {
+    if (e.agentId !== undefined) return { result: 'Refused: only the main conversation.' }
+    return { result: omtDueWords() ?? 'There is no message of his to show for this reply.' }
+  }).catch(() => ({ result: 'full_message failed inside the mod.' }))
+
   // One message per turn (item 12). A main-loop turn starts clean, with the switch as stored.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
@@ -720,8 +880,16 @@ export const register: Register = on => {
       omtHeld = []
       omtSaid = false
       omtPass = 0
+      omtPassWords = []
       omtBefore = false
       omtWorked = false
+      // Item 14: his words, from the prompt.submit that is starting this turn, or else one of his recent typed
+      // messages that this turn's text matches; none for any other turn.
+      const t = e.text.trim()
+      omtWords = omtStartWords !== undefined ? (omtStartWords ?? undefined) : omtTyped.includes(t) ? t : undefined
+      if (omtWords !== undefined) omtForget(omtWords)
+      omtStartWords = undefined
+      omtRowFor = undefined
       try {
         omtOn = (await $.store.get(OMT_STORE_KEY)) !== false
       } catch {
@@ -741,12 +909,32 @@ export const register: Register = on => {
     let shown = ''
     let sawTool = false
     let heldHere = false
-    const settle = (isLast: boolean): TurnStepChunk[] => {
+    const settle = (isLast: boolean, isRow = false): TurnStepChunk[] => {
       const out = kept
       const said = text
       kept = []
       text = ''
       if (said.trim().length === 0) return out
+      if (!isLast && OMT_ROW_MARK.test(said)) {
+        // Item 15: the marker line is never his to read. Right above the full-message row it becomes the quote
+        // of the words the reply now due answers; anywhere else it is dropped, unrecorded.
+        heldHere = true
+        const words = isRow ? omtDueWords() : undefined
+        const quote = words === undefined ? '' : omtFullHeader(words).trimEnd()
+        if (quote === '') return out.filter(c => c.kind !== 'text')
+        omtRowFor = words
+        shown += `${quote}\n\n`
+        const swapped: TurnStepChunk[] = []
+        let isPut = false
+        for (const c of out) {
+          if (c.kind !== 'text') swapped.push(c)
+          else if (!isPut) {
+            isPut = true
+            swapped.push({ ...c, text: quote })
+          }
+        }
+        return swapped
+      }
       if (!isLast) {
         if (OMT_WORKING_LINE.test(said)) {
           // Only the first working line of a turn goes out; later ones are dropped, unrecorded and unanswered.
@@ -756,12 +944,29 @@ export const register: Register = on => {
           }
           omtWorked = true
         } else if (!OMT_P40_LINE.test(said)) {
-          if (omtPass > 0) omtPass -= 1
-          else {
+          if (omtPass === 0) {
             omtDue.push(said.trim())
             omtHeld.push(said.trim())
             heldHere = true
             return out.filter(c => c.kind !== 'text')
+          }
+          omtPass -= 1
+          // Item 14: the reply owed to a message he typed mid-turn carries that message's words.
+          const words = omtPassWords.shift()
+          if (words !== undefined) {
+            omtForget(words)
+            if (omtRowFor === words) {
+              // Its quote already went out above the full-message row.
+              omtRowFor = undefined
+              omtBefore = true
+              shown += said
+              return out
+            }
+            const [stamped, withHeader] = omtStamp(out, said, words)
+            omtBefore = true
+            if (withHeader !== said) heldHere = true
+            shown += withHeader
+            return stamped
           }
         }
         omtBefore = true
@@ -771,15 +976,18 @@ export const register: Register = on => {
       omtSaid = true
       // The break (Chris 2026-11-21: "it all blends"; his pick, the heavy line with no words): stamped above
       // the reply when anything came before it in this turn. Never doubled if the model wrote one itself.
-      if (omtBefore && !said.trimStart().startsWith(OMT_BREAK)) {
-        let isStamped = false
-        heldHere = true
-        shown += `${OMT_BREAK}\n\n${said}`
-        return out.map(c => {
-          if (isStamped || c.kind !== 'text') return c
-          isStamped = true
-          return { ...c, text: `${OMT_BREAK}\n\n${c.text}` }
-        })
+      // Item 14: a turn that answers a message he typed always gets the header with his words.
+      if (omtRowFor !== undefined && omtRowFor === omtWords) {
+        // Item 15: its quote already went out above the full-message row.
+        omtRowFor = undefined
+        shown += said
+        return out
+      }
+      if (omtBefore || omtWords !== undefined) {
+        const [stamped, withHeader] = omtStamp(out, said, omtWords)
+        if (withHeader !== said) heldHere = true
+        shown += withHeader
+        return stamped
       }
       shown += said
       return out
@@ -797,7 +1005,7 @@ export const register: Register = on => {
         text += c.text
       } else if (c.kind === 'tool') {
         sawTool = true
-        for (const k of settle(false)) yield k
+        for (const k of settle(false, FULL_TOOL.test(c.name))) yield k
         omtBefore = true
         yield c
       } else if (c.kind === 'stop') {
@@ -851,16 +1059,22 @@ export const register: Register = on => {
   // Whatever triggers a compaction, the summarizer is told to keep the rules and the NEXT pointer.
   // An auto-compaction also records the fire point and scolds.
   on('session.compact', async ($, e, next) => {
+    // A subagent's or a fork's own transcript compacting is not this conversation (Chris 2026-11-22: the
+    // "Auto-compacted at 33 percent. WE BLEW IT" box popped in Printing when its background agent filled its
+    // own window, and Printing itself had not compacted): no pin, no fire point, no box, and the warning
+    // lines stay as they are.
+    if (e.agentId !== undefined) return next(e)
+    const isAutoP40 = e.trigger === 'auto' && (await p40IsOn($))
     // P40's direct call already carries the pin; never pin twice.
     const instructions = e.instructions?.includes(PIN_HEADER)
       ? e.instructions
-      : (e.instructions ? `${e.instructions}\n\n` : '') + PIN_HEADER + rulesText
+      : (e.instructions ? `${e.instructions}\n\n` : '') + (isAutoP40 ? AUTO_REREAD : '') + PIN_HEADER + rulesText
     const result = await next({ ...e, instructions })
     if (e.trigger === 'precompute' || result.skip !== undefined) return result
     const pct = lastPct
     if (e.trigger === 'auto' && pct !== undefined) {
       await recordFirePoint($, lastWindow, pct)
-      askBox($, COMPACTED_TEXT(pct), COMPACTED_BUTTONS)
+      askBox($, (isAutoP40 ? COMPACTED_P40_TEXT : COMPACTED_TEXT)(pct), COMPACTED_BUTTONS)
     }
     tiersFired = 0
     p40GoSent = false

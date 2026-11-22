@@ -7,7 +7,12 @@
     {
       "name": "context-guard",
       "source": "./",
-      "version": "1.0.23"
+      "version": "1.0.24"
+    },
+    {
+      "name": "context-guard-box",
+      "source": "./context-guard-box",
+      "version": "0.1.0"
     }
   ]
 }
