@@ -11,7 +11,11 @@
     },
     {
       "name": "context-guard-box",
-      "source": "./context-guard-box",
+      "source": {
+        "source": "github",
+        "repo": "csteuble/claude-context-guard",
+        "ref": "box"
+      },
       "version": "0.1.0"
     }
   ]
