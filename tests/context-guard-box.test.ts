@@ -1,14 +1,40 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { CLOSED, CLOSE_MS, P40_BOX } from '../hooks/register'
+import { CLOSED, CLOSE_MS, P40_BOX, WORKER_BOX } from '../hooks/register'
 
 const ask = (question: string) => ({ tool: 'AskUserQuestion', questions: [{ question, options: [{ label: 'Compact now' }, { label: 'Wait' }] }] })
 const BOX = 'Context 60%. Auto compact will begin in 1 minute.'
+// The context guard's Peck box (1.0.31, its WORKER_ASK_TEXT): Chris's three lines, approved 2026-11-22.
+const WBOX = 'Job: recheck every formula in the wood usage report\nRun this Peck on Fable at Max?\nNo answer in 60 seconds: Opus at High.'
 
-test('the box pattern matches the context guard box and nothing else', async () => {
+test('the box patterns match the context guard boxes and nothing else', async () => {
   expect(P40_BOX.test(BOX)).toBe(true)
   expect(P40_BOX.test('Context 65%. Auto compact will begin in 1 minute.')).toBe(true)
   expect(P40_BOX.test('RULES BROKEN\nStart a new session or tell Claude to fix it.')).toBe(false)
   expect(P40_BOX.test('Which option do you want?')).toBe(false)
+  expect(WORKER_BOX.test(WBOX)).toBe(true)
+  expect(WORKER_BOX.test('Job: \nRun this Peck on Opus at Max?\nNo answer in 60 seconds: Opus at High.')).toBe(true)
+  expect(WORKER_BOX.test('Job: the build\nRun this Peck on Fable at Max?\nWhich option do you want?')).toBe(false)
+  expect(WORKER_BOX.test('Job: the build. Run this Peck on Fable at Max? No answer in 60 seconds: Opus at High.')).toBe(false)
+  expect(WORKER_BOX.test(BOX)).toBe(false)
+})
+
+test('the Peck box: no tap for a minute, the mod answers the call and the app takes the box down', async ($, on) => {
+  const clock = mock.clock(on)
+  on('tool.call', { tool: 'AskUserQuestion' }, () => new Promise(() => undefined) as never)
+  let settled: unknown
+  const call = ($.tool.call(ask(WBOX) as never) as Promise<unknown>).then(
+    r => {
+      settled = r
+    },
+    err => {
+      settled = { threw: String(err) }
+    },
+  )
+  await clock.advance(CLOSE_MS - 1_000)
+  expect(settled).toBe(undefined)
+  await clock.advance(2_000)
+  await call
+  expect((settled as { deny?: string }).deny).toBe(CLOSED)
 })
 
 test('no tap for a minute: the call is answered by the mod, so the app takes the box down', async ($, on) => {

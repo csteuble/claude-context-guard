@@ -1,7 +1,7 @@
 {
   "name": "context-guard-box",
-  "version": "0.1.0",
-  "description": "Companion of Chris's context guard: closes the context guard's \"Auto compact will begin in 1 minute\" box by itself when the minute is up. A mod cannot close its own question box, so this second mod does it.",
+  "version": "0.2.0",
+  "description": "Companion of Chris's context guard: closes the context guard's \"Auto compact will begin in 1 minute\" box and its 60-second Peck box by itself when the minute is up. A mod cannot close its own question box, so this second mod does it.",
   "author": {
     "name": "Chris Steuble (built with Claude)"
   },
