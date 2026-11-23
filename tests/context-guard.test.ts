@@ -1,5 +1,16 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { OMT_QUOTE_MAX, omtFullHeader, omtHeader } from '../hooks/register'
+import {
+  FULL_ROW_REDO,
+  OMT_QUOTE_MAX,
+  WORKER_BOX,
+  WORKER_COMPACT_AT,
+  WORKER_STILL_UP,
+  WORKER_TYPE,
+  ltShellWait,
+  omtCopyLength,
+  omtFullHeader,
+  omtHeader,
+} from '../hooks/register'
 
 const usage = (percent: number | undefined, window = 200_000) => ({
   value: {
@@ -21,10 +32,17 @@ const READOUT_8_BROKEN =
   `${NBSP}\n\n${NBSP}\n\n**CONTEXT: 8%** (16000 of 200000 tokens)\n\n${NBSP}\n\n` +
   `*RULES BROKEN*\\\n*Start a new session or tell Claude to fix it.*\n\n${NBSP}\n\n${NBSP}`
 
-function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused'; noUsage?: boolean; onDisk?: string[]; p40On?: boolean; answer?: string } = {}) {
+function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?: Record<string, number>; fetchOk?: boolean; usagePct?: number; onCompact?: (instructions: string | undefined) => void; registerThrows?: boolean; mute?: 'ok' | 'fail' | 'refused'; noUsage?: boolean; onDisk?: string[]; p40On?: boolean; answer?: string; askWait?: () => Promise<void>; compactWait?: () => Promise<void>; agentThrows?: boolean } = {}) {
   const asked: string[] = []
   const buttons: string[][] = []
   const registered: Array<Record<string, unknown>> = []
+  // Item 18: the agent types the mod registers.
+  const agents: Array<Record<string, unknown>> = []
+  on('agent.register', (_, e) => {
+    agents.push(e as Record<string, unknown>)
+    if (opts.agentThrows) throw new Error('agent register refused')
+    return { value: { agent: `context-guard:${String((e as { name?: unknown }).name)}` } }
+  })
   const entered: Array<{ text: string; context?: readonly string[] }> = []
   const store: Record<string, unknown> = opts.stored ? { firePoints: opts.stored } : {}
   // P40 auto compact is on unless the stored flag is false. The older tests check the old warning boxes, so
@@ -55,7 +73,9 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     return { value: { exitCode: opts.mute === 'fail' ? 1 : 0, stdout: stdout + '\r\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   // $.ui.ask is a tool.call of AskUserQuestion under the hood; answer it as the engine would.
-  on('tool.call', { tool: 'AskUserQuestion' }, ($, e) => {
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e) => {
+    // Item 17's tests: the box waits on him this long before he answers.
+    if (opts.askWait) await opts.askWait()
     const first = (e as { questions?: Array<{ question: string; options?: Array<{ label: string }> }> }).questions?.[0]
     const q = first?.question ?? ''
     asked.push(q)
@@ -68,10 +88,12 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
   // P40: the mod's own direct call carries no messages; it is refused, as a session the desktop app hosts refuses
   // it, and the mod then queues a real /compact. (The harness cannot hand the mod the engine's own "a turn is
   // running" refusal, so the waiting-message path is proven in a live session, not here: P40 Docs, 2026-11-21.)
-  on('session.compact', (_, e) => {
+  on('session.compact', async (_, e) => {
     if (e.trigger === 'plugin' || !Array.isArray(e.messages)) {
       throw new Error('$.session.compact: not available in a headless (-p / SDK) session yet')
     }
+    // Item 17's tests: the compaction takes this long.
+    if (opts.compactWait) await opts.compactWait()
     opts.onCompact?.(e.instructions)
     return { messages: e.messages }
   })
@@ -97,7 +119,7 @@ function harness(on: Parameters<Parameters<typeof test>[1]>[1], opts: { stored?:
     entered.push({ text: e.text, context: e.context })
     return { text: e.text, context: e.context }
   })
-  return { asked, buttons, store, registered, entered, ran, files, commands }
+  return { asked, buttons, store, registered, entered, ran, files, commands, agents }
 }
 
 // P40 (item 10): what the tests hand compact_now, and the end of a main-loop turn.
@@ -306,7 +328,10 @@ test('"CC TEST" pops the 60 percent box once with the current percent, and nothi
 test('the tool registers as deferred, so it is announced when the mod attaches mid-conversation', async ($, on) => {
   const h = harness(on, { fetchOk: true })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  expect(h.registered.length).toBe(4)
+  expect(h.registered.length).toBe(5)
+  // The 60-second ask (item 19, 1.0.31): the fifth tool, deferred the same way.
+  expect(h.registered[4].name).toBe('ask_a_peck')
+  expect(h.registered[4].isDeferred).toBe(true)
   // The full-message row (item 15): the fourth tool, deferred the same way.
   expect(h.registered[3].name).toBe('-_view_full_message')
   expect(h.registered[3].isDeferred).toBe(true)
@@ -866,6 +891,72 @@ test('reply header: a turn with tools before the reply gets it once, and a break
   expect((await runStep($ as never, 4)).text).toBe(`${FULL('fix it')}The model wrote the whole header.`)
 })
 
+// His two real messages from 2026-11-22 19:38, where the model's own quote stayed and his words showed twice.
+const TWO_FINE = '2 fine \n\nGive better example of 3 actual wording and below it response same for 4'
+const TRANSLATES =
+  'walk me through what the row does on a phone and what each piece of it really translates to. is that the same on the PC or not'
+
+test('reply header: omtCopyLength finds a typed copy of his words, exact or near, and nothing else', async () => {
+  // Real case 1: the model's copy has two spaces where his blank line was.
+  const typed1 = '> *2 fine  Give better example of 3 actual wording and below it response same for 4*\n\n'
+  expect(omtCopyLength(`${typed1}The reply.`, TWO_FINE)).toBe(typed1.trimEnd().length + 1)
+  // Real case 2: the mod cut his words after "is that", the model's copy after "is".
+  expect(omtHeader(TRANSLATES).endsWith('translates to. is that…*\n\n')).toBe(true)
+  const typed2 = `> *${TRANSLATES.slice(0, TRANSLATES.indexOf(' that'))}…*\n`
+  expect(typed2.endsWith('translates to. is…*\n')).toBe(true)
+  expect(omtCopyLength(`${typed2}\nThe reply.`, TRANSLATES)).toBe(typed2.length)
+  // An exact copy of the mod's own quote, and his words split over several quote lines.
+  expect(omtCopyLength(`${omtHeader(TWO_FINE)}The reply.`, TWO_FINE)).toBe(omtHeader(TWO_FINE).trimEnd().length + 1)
+  const split = '> *2 fine*\n>\n> *Give better example of 3 actual wording and below it response same for 4*\n'
+  expect(omtCopyLength(`${split}The reply.`, TWO_FINE)).toBe(split.length)
+  // Escapes and a plain "..." come off before the compare.
+  expect(omtCopyLength('> *a \\*star\\* here...*\nok', 'a *star* here and more')).toBe('> *a \\*star\\* here...*\n'.length)
+  // A quote line that is not a copy of his words stays, and so does a copy that comes after it.
+  expect(omtCopyLength('> *Measure twice, cut once.*\nThe reply.', TWO_FINE)).toBe(0)
+  expect(omtCopyLength(`> *something else*\n${typed1}`, TWO_FINE)).toBe(0)
+  // A copy followed by a different quote line: only the copy goes.
+  expect(omtCopyLength(`${typed1}> *Measure twice.*\n`, TWO_FINE)).toBe(typed1.trimEnd().length + 1)
+  // A line that only starts like his words is not a copy, and a few characters are too short to count.
+  expect(omtCopyLength('> *2 fine but no*\n', TWO_FINE)).toBe(0)
+  expect(omtCopyLength('> *2*\n', TWO_FINE)).toBe(0)
+  expect(omtCopyLength('> *ok*\n', 'ok')).toBe('> *ok*\n'.length)
+  // Not a quote line at all.
+  expect(omtCopyLength('2 fine Give better example\n', TWO_FINE)).toBe(0)
+})
+
+test('reply header: a near copy of his words the model typed itself is taken out; a quote of something else stays', async ($, on) => {
+  harness(on, { fetchOk: true })
+  const typed1 = '> *2 fine  Give better example of 3 actual wording and below it response same for 4*\n\n'
+  omt(on, [
+    [T(typed1), T('**TLDR:** here it is.'), STOP('end_turn')],
+    [T(`${BREAK}\n\n${typed1}`), T('**TLDR:** again.'), STOP('end_turn')],
+    [T('> *Measure twice, cut once.*\n\nThat is the line you asked about.'), STOP('end_turn')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  // Real case 1, with and without the model's own line of dashes.
+  await $.prompt.submit({ text: TWO_FINE, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: TWO_FINE, turnId: 't1' } as never)
+  const one = await runStep($ as never, 0)
+  expect(one.text).toBe(`${omtFullHeader(TWO_FINE)}**TLDR:** here it is.`)
+  expect(one.result.answer).toBe(`${omtFullHeader(TWO_FINE)}**TLDR:** here it is.`)
+  expect(one.text.split('Give better').length).toBe(2)
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: TWO_FINE, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: TWO_FINE, turnId: 't2' } as never)
+  const two = await runStep($ as never, 1)
+  expect(two.text).toBe(`${omtFullHeader(TWO_FINE)}**TLDR:** again.`)
+  expect(two.text.split(BREAK).length).toBe(2)
+  await $.turn.complete(turnEnd())
+
+  // A quote that is not a copy of his words stays, under the header.
+  await $.prompt.submit({ text: 'what was that line?', origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: 'what was that line?', turnId: 't3' } as never)
+  expect((await runStep($ as never, 2)).text).toBe(
+    `${FULL('what was that line?')}> *Measure twice, cut once.*\n\nThat is the line you asked about.`,
+  )
+})
+
 test('reply header: a message typed mid-turn puts its words on the reply it lets through; the closing message carries the first', async ($, on) => {
   harness(on, { fetchOk: true })
   omt(on, [[T('About five minutes.'), TOOL, STOP('tool_use')], [T('All built.'), STOP('end_turn')]])
@@ -915,6 +1006,35 @@ test('full message row: the marker above the row becomes the quote, the tool ret
   expect((await $.turn.complete(turnEnd())).text).toBe('ok')
 })
 
+test('full message row: a copy of his words the model typed again under the row is taken out; other text is not', async ($, on) => {
+  harness(on, { fetchOk: true })
+  // Real case 2: the model's copy is cut after "is", the mod's quote after "is that".
+  const typed2 = `> *${TRANSLATES.slice(0, TRANSLATES.indexOf(' that'))}…*\n\n`
+  omt(on, [
+    [TOOL, STOP('tool_use')],
+    [T('QUOTE'), ROW, STOP('tool_use')],
+    [T(`${BREAK}\n\n${typed2}`), T('**TLDR:** done.'), STOP('end_turn')],
+    [TOOL, STOP('tool_use')],
+    [T('QUOTE'), ROW, STOP('tool_use')],
+    [T('> *Measure twice, cut once.*\n\n**TLDR:** kept.'), STOP('end_turn')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: TRANSLATES, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: TRANSLATES, turnId: 't1' } as never)
+  await runStep($ as never, 0)
+  expect((await runStep($ as never, 1)).text).toBe(omtFullHeader(TRANSLATES).trimEnd())
+  const last = await runStep($ as never, 2)
+  expect(last.text).toBe('**TLDR:** done.')
+  expect(last.result.answer).toBe('**TLDR:** done.')
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't2' } as never)
+  await runStep($ as never, 3)
+  await runStep($ as never, 4)
+  expect((await runStep($ as never, 5)).text).toBe('> *Measure twice, cut once.*\n\n**TLDR:** kept.')
+})
+
 test('full message row: a long message typed mid-turn gets its own quote and row; the closing reply keeps the first message', async ($, on) => {
   harness(on, { fetchOk: true })
   omt(on, [[T('QUOTE'), ROW, STOP('tool_use')], [T('About five minutes.'), TOOL, STOP('tool_use')], [T('All built.'), STOP('end_turn')]])
@@ -929,17 +1049,109 @@ test('full message row: a long message typed mid-turn gets its own quote and row
   expect((await runStep($ as never, 2)).text).toBe(`${omtFullHeader('build it')}All built.`)
 })
 
-test('full message row: a marker with no row is dropped, never held; a row with no marker leaves the quote on the reply', async ($, on) => {
+const callRow = async ($: unknown) =>
+  ((await ($ as { tool: { call: (i: never) => Promise<unknown> } }).tool.call({ tool: 'mcp__context-guard__-_view_full_message' } as never)) as {
+    result?: unknown
+    context?: unknown
+  })
+
+test('full message row: a marker with no row is dropped, never held; a row with no marker is sent back and made again with the quote', async ($, on) => {
   harness(on, { fetchOk: true })
-  omt(on, [[T('QUOTE'), TOOL, STOP('tool_use')], [ROW, STOP('tool_use')], [T('Done.'), STOP('end_turn')]])
+  omt(on, [
+    [T('QUOTE'), TOOL, STOP('tool_use')],
+    [ROW, STOP('tool_use')],
+    [T('QUOTE'), ROW, STOP('tool_use')],
+    [T('Done.'), STOP('end_turn')],
+  ])
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
   await $.turn.start({ text: LONG, turnId: 't1' } as never)
   expect((await runStep($ as never, 0)).text).toBe('')
   const none = (await $.tool.call({ tool: 'mcp__x__y' } as never)) as { context?: unknown }
   expect(none.context).toBe(undefined)
+  // A step that holds only the row call: his phone would fold it away, so the tool sends it back.
+  const bare = await runStep($ as never, 1)
+  expect(bare.text).toBe('')
+  expect(bare.out.map(c => c.kind).join(',')).toBe('tool,stop')
+  expect((await callRow($)).result).toBe(FULL_ROW_REDO)
+  // Made again with the marker: the quote goes above it and the reply is not stamped again.
+  expect((await runStep($ as never, 2)).text).toBe(omtFullHeader(LONG).trimEnd())
+  expect((await callRow($)).result).toBe(LONG)
+  expect((await runStep($ as never, 3)).text).toBe('Done.')
+})
+
+test('full message row: other text before a row with no marker is held, and the row is sent back to be made again', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[T('Here is the row.'), ROW, STOP('tool_use')], [T('QUOTE'), ROW, STOP('tool_use')], [T('Done.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('')
+  const back = await callRow($)
+  expect(back.result).toBe(FULL_ROW_REDO)
+  expect(String(back.context)).toContain('HELD TEXT BEGIN\nHere is the row.\nHELD TEXT END')
+  expect((await runStep($ as never, 1)).text).toBe(omtFullHeader(LONG).trimEnd())
+  expect((await callRow($)).result).toBe(LONG)
+  expect((await runStep($ as never, 2)).text).toBe('Done.')
+})
+
+test('full message row: a row with no marker is sent back at most twice a turn, then the quote stays on the reply', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[ROW, STOP('tool_use')], [ROW, STOP('tool_use')], [ROW, STOP('tool_use')], [T('Done.'), STOP('end_turn')], [ROW, STOP('tool_use')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't1' } as never)
+  await runStep($ as never, 0)
+  expect((await callRow($)).result).toBe(FULL_ROW_REDO)
+  await runStep($ as never, 1)
+  expect((await callRow($)).result).toBe(FULL_ROW_REDO)
+  await runStep($ as never, 2)
+  expect((await callRow($)).result).toBe(LONG)
+  expect((await runStep($ as never, 3)).text).toBe(`${omtFullHeader(LONG)}Done.`)
+  // The next turn starts with its redos back.
+  await $.turn.complete(turnEnd())
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't2' } as never)
+  await runStep($ as never, 4)
+  expect((await callRow($)).result).toBe(FULL_ROW_REDO)
+})
+
+test('full message row: a second row for the same words never prints the quote twice and is not sent back', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [
+    [T('QUOTE'), ROW, STOP('tool_use')],
+    [ROW, STOP('tool_use')],
+    [T('QUOTE'), ROW, STOP('tool_use')],
+    [T('Done.'), STOP('end_turn')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe(omtFullHeader(LONG).trimEnd())
+  expect((await callRow($)).result).toBe(LONG)
   expect((await runStep($ as never, 1)).text).toBe('')
-  expect((await runStep($ as never, 2)).text).toBe(`${omtFullHeader(LONG)}Done.`)
+  expect((await callRow($)).result).toBe(LONG)
+  const again = await runStep($ as never, 2)
+  expect(again.text).toBe('')
+  expect(again.out.map(c => c.kind).join(',')).toBe('tool,stop')
+  expect((await callRow($)).result).toBe(LONG)
+  expect((await runStep($ as never, 3)).text).toBe('Done.')
+})
+
+test('full message row: a row with no marker is not sent back with the guard off or with none of his words', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [[ROW, STOP('tool_use')], [ROW, STOP('tool_use')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'a turn nobody typed', turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('')
+  expect((await callRow($)).result).toBe('There is no message of his to show for this reply.')
+  await $.turn.complete(turnEnd())
+
+  await $.prompt.submit({ text: 'One message off' })
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't2' } as never)
+  await runStep($ as never, 1)
+  expect((await callRow($)).result).toBe(LONG)
 })
 
 test('full message row: called with none of his words, or by a subagent, it says so', async ($, on) => {
@@ -1101,4 +1313,427 @@ test('one message: a subagent step is left alone', async ($, on) => {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.turn.start({ text: 'hi', turnId: 't1' } as never)
   expect((await runStep($ as never, 0, 'agent-1')).text).toBe('Subagent text before a tool.')
+})
+
+// ---------- The long turn guard (item 17) ----------
+
+const LT_LOG = 'C:/Project/_Claude/P40 Compact Notes/Long Turn Log.txt'
+const LONG_NOTE = '(context-guard) LONG TURN'
+const REFUSED = '(context-guard) LONG WAIT REFUSED'
+const START = { cwd: 'C:/Project', surface: 'desktop', isInteractive: true } as never
+type Called = { result?: unknown; context?: unknown; deny?: unknown }
+const bash = (command: string, more: Record<string, unknown> = {}) => ({ tool: 'Bash', command, ...more }) as never
+const pwsh = (command: string, more: Record<string, unknown> = {}) => ({ tool: 'PowerShell', command, ...more }) as never
+const X = { tool: 'mcp__x__y' } as never
+// The shell tools answer as a session's would.
+function shell(on: Parameters<Parameters<typeof test>[1]>[1]) {
+  on('tool.call', { tool: /^(Bash|PowerShell)$/ }, () => ({ result: 'ran' }) as never)
+}
+
+test('long turn: ltShellWait reads a plain wait and lets ordinary quick work through', async () => {
+  // Waits.
+  expect(ltShellWait({ command: 'npm test', timeout: 120_000 })).toContain('timeout is 120 seconds')
+  expect(ltShellWait({ command: 'sleep 90' })).toContain('about 90 seconds')
+  expect(ltShellWait({ command: 'sleep 2m' })).toContain('about 120 seconds')
+  expect(ltShellWait({ command: 'Start-Sleep -Seconds 75' })).toContain('about 75 seconds')
+  expect(ltShellWait({ command: 'Start-Sleep -Milliseconds 90000' })).toContain('about 90 seconds')
+  expect(ltShellWait({ command: 'sleep 40 && sleep 30' })).toContain('about 70 seconds')
+  expect(ltShellWait({ command: 'for i in 1 2 3 4 5 6 7; do sleep 10; done' })).toContain('about 70 seconds')
+  expect(ltShellWait({ command: 'for i in {1..30}; do sleep 5; done' })).toContain('about 150 seconds')
+  expect(ltShellWait({ command: 'foreach ($i in 1..20) { Start-Sleep 5 }' })).toContain('about 100 seconds')
+  expect(ltShellWait({ command: 'until test -f done.txt; do sleep 5; done' })).toContain('no fixed end')
+  expect(ltShellWait({ command: 'while ($true) { if (Test-Path x) { break }; Start-Sleep 2 }' })).toContain('no fixed end')
+  expect(ltShellWait({ command: 'timeout /t 90' })).toContain('about 90 seconds')
+  expect(ltShellWait({ command: 'python -c "import time; time.sleep(120)"' })).toContain('about 120 seconds')
+  // Not waits.
+  expect(ltShellWait({ command: 'ls -la' })).toBe(undefined)
+  expect(ltShellWait({ command: 'npm test', timeout: 60_000 })).toBe(undefined)
+  expect(ltShellWait({ command: 'sleep 300', run_in_background: true })).toBe(undefined)
+  expect(ltShellWait({ command: 'npm test', timeout: 600_000, run_in_background: true })).toBe(undefined)
+  expect(ltShellWait({ command: 'sleep 5' })).toBe(undefined)
+  expect(ltShellWait({ command: 'for i in 1 2 3; do curl -s x && break; sleep 10; done' })).toBe(undefined)
+  // A timeout of a minute or less caps the call, whatever it sleeps.
+  expect(ltShellWait({ command: 'until test -f x; do sleep 1; done', timeout: 30_000 })).toBe(undefined)
+  expect(ltShellWait({ command: 'while read line; do echo "$line"; done < list.txt' })).toBe(undefined)
+  // A script being written, a sentence, and a search are not waits.
+  expect(ltShellWait({ command: "cat > run.sh <<'EOF'\nsleep 300\nEOF\nchmod +x run.sh" })).toBe(undefined)
+  expect(ltShellWait({ command: "git commit -m 'fix the poll so it does not sleep 90 seconds'" })).toBe(undefined)
+  expect(ltShellWait({ command: 'grep -rn "sleep" src' })).toBe(undefined)
+})
+
+test('long turn: in a main session a long foreground wait on the shell is refused, and quick or background work runs', async ($, on) => {
+  harness(on, { fetchOk: true })
+  omt(on, [])
+  shell(on)
+  await $.session.start(START)
+  await $.turn.start({ text: 'build it', turnId: 't1' } as never)
+  const slow = (await $.tool.call(bash('npm test', { timeout: 300_000 }))) as Called
+  expect(String(slow.deny)).toContain(REFUSED)
+  expect(String(slow.deny)).toContain('run_in_background: true')
+  expect(String(((await $.tool.call(pwsh('Start-Sleep -Seconds 120'))) as Called).deny)).toContain(REFUSED)
+  expect(((await $.tool.call(bash('npm test', { timeout: 300_000, run_in_background: true }))) as Called).result).toBe('ran')
+  expect(((await $.tool.call(bash('ls'))) as Called).result).toBe('ran')
+  expect(((await $.tool.call(pwsh('Get-ChildItem', { timeout: 30_000 }))) as Called).result).toBe('ran')
+})
+
+test('long turn: past a minute of the turn a note rides beside the next tool result, at most once a minute, and never blocks it', async ($, on) => {
+  const clock = mock.clock(on)
+  harness(on, { fetchOk: true })
+  omt(on, [])
+  await $.session.start(START)
+  await $.turn.start({ text: 'build it', turnId: 't1' } as never)
+  await clock.advance(30_000)
+  const early = (await $.tool.call(X)) as Called
+  expect(early.result).toBe('tool ran')
+  expect(early.context).toBe(undefined)
+  await clock.advance(35_000)
+  const late = (await $.tool.call(X)) as Called
+  expect(late.result).toBe('tool ran')
+  expect(String(late.context)).toContain(LONG_NOTE)
+  expect(String(late.context)).toContain('over 1 min')
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await clock.advance(30_000)
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await clock.advance(31_000)
+  expect(String(((await $.tool.call(X)) as Called).context)).toContain('over 2 min')
+  // A new turn starts the clock over.
+  await $.turn.complete(turnEnd())
+  await $.turn.start({ text: 'next', turnId: 't2' } as never)
+  await clock.advance(10_000)
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+})
+
+test("long turn: time a question box waits on him, and a compaction inside the turn, are not the turn's", async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, askWait: () => clock.sleep(120_000), compactWait: () => clock.sleep(150_000) })
+  omt(on, [])
+  await $.session.start(START)
+  await $.turn.start({ text: 'ask me', turnId: 't1' } as never)
+  await clock.advance(20_000)
+  const asking = $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] } as never)
+  await clock.advance(120_000)
+  await asking
+  // 140 seconds on the wall, 20 of its own.
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  const compacting = $.session.compact({ trigger: 'auto', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  await clock.advance(150_000)
+  await compacting
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await clock.advance(41_000)
+  expect(String(((await $.tool.call(X)) as Called).context)).toContain(LONG_NOTE)
+  await $.turn.complete(turnEnd())
+  expect(h.files[LT_LOG]).toContain('| 61 s |')
+})
+
+test('long turn: a main turn over a minute gets one line in Long Turn Log.txt beside the P40 log; a short one gets none', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  omt(on, [])
+  on('classic.UserPromptSubmit', () => ({}) as never)
+  await $.session.start(START)
+  await $.classic.UserPromptSubmit({ prompt: 'go', session_title: 'PORTER - VAULT & MEMORY' } as never)
+  await $.turn.start({ text: 'go', turnId: 't1' } as never)
+  await clock.advance(20_000)
+  await $.tool.call(X)
+  await $.tool.call(X)
+  await clock.advance(55_000)
+  await $.turn.complete(turnEnd())
+  expect(h.files[LT_LOG]).toMatch(/^\S+ PORTER - VAULT & MEMORY \| 75 s \| 2 tool calls\n$/)
+  await $.turn.start({ text: 'quick', turnId: 't2' } as never)
+  await clock.advance(10_000)
+  await $.turn.complete(turnEnd())
+  expect((h.files[LT_LOG] ?? '').split('\n').filter(l => l.length > 0).length).toBe(1)
+})
+
+test('long turn: "Long turn off" switches the refusal, the note, and the log off in every session; "Long turn on" returns them', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  omt(on, [])
+  shell(on)
+  await $.session.start(START)
+  const off = await $.prompt.submit({ text: 'Long turn off.' })
+  expect(h.store.longTurn).toBe(false)
+  expect((off.context ?? []).some(c => c.includes('Reply with exactly this line and nothing else, no tool calls: The long turn guard is off.'))).toBe(true)
+  await $.turn.start({ text: 'Long turn off.', turnId: 't1' } as never)
+  expect(((await $.tool.call(bash('sleep 120'))) as Called).result).toBe('ran')
+  await clock.advance(90_000)
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await $.turn.complete(turnEnd())
+  expect(h.files[LT_LOG]).toBe(undefined)
+
+  const back = await $.prompt.submit({ text: 'long turn ON' })
+  expect(h.store.longTurn).toBe(true)
+  expect((back.context ?? []).some(c => c.includes('The long turn guard is on.'))).toBe(true)
+  await $.turn.start({ text: 'x', turnId: 't2' } as never)
+  expect(String(((await $.tool.call(bash('sleep 120'))) as Called).deny)).toContain(REFUSED)
+  // Inside a longer message the words mean nothing special.
+  const said = await $.prompt.submit({ text: 'should I say long turn off?' })
+  expect((said.context ?? []).some(c => c.includes('long turn guard'))).toBe(false)
+  expect(h.store.longTurn).toBe(true)
+})
+
+test('long turn: a subagent, and a session whose brief carries the line LONG TURNS OK, are left alone; a mention in a sentence is not the marker', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  omt(on, [])
+  shell(on)
+  on('session.id', () => ({ value: 'worker-1' }))
+  await $.session.start(START)
+  await $.turn.start({ text: 'go', turnId: 't1' } as never)
+  expect(((await $.tool.call({ tool: 'Bash', command: 'sleep 120', agentId: 'agent-1' } as never)) as Called).result).toBe('ran')
+  await $.turn.complete(turnEnd())
+  await $.prompt.submit({ text: 'Put the line `LONG TURNS OK` in the brief.' })
+  await $.turn.start({ text: 'x', turnId: 't2' } as never)
+  expect(String(((await $.tool.call(bash('sleep 120'))) as Called).deny)).toContain(REFUSED)
+  await $.turn.complete(turnEnd())
+  expect(h.store.longTurnWorkers).toBe(undefined)
+
+  await $.prompt.submit({ text: 'You are a background worker for Porter.\nLONG TURNS OK\nDo the build.' })
+  await $.turn.start({ text: 'brief', turnId: 't3' } as never)
+  expect(((await $.tool.call(bash('sleep 120'))) as Called).result).toBe('ran')
+  await clock.advance(120_000)
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await $.turn.complete(turnEnd())
+  expect(h.files[LT_LOG]).toBe(undefined)
+  expect(h.store.longTurnWorkers).toEqual(['worker-1'])
+})
+
+test('long turn: after a mod reload a worker is still known by its session id, and any other session is a main', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
+  omt(on, [])
+  shell(on)
+  let id = 'worker-1'
+  on('session.id', () => ({ value: id }))
+  h.store.longTurnWorkers = ['worker-1']
+  await $.session.start(START)
+  await $.turn.start({ text: 'go', turnId: 't1' } as never)
+  expect(((await $.tool.call(bash('sleep 120'))) as Called).result).toBe('ran')
+  await $.turn.complete(turnEnd())
+  id = 'main-1'
+  await $.session.start(START)
+  await $.turn.start({ text: 'go', turnId: 't2' } as never)
+  expect(String(((await $.tool.call(bash('sleep 120'))) as Called).deny)).toContain(REFUSED)
+})
+
+test('long turn: the auto compact turn, and a turn that called compact_now, get no note and no log line', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, onDisk: [NOTES], p40On: true })
+  omt(on, [])
+  await $.session.start(START)
+  await $.turn.start({ text: 'P40 AUTO COMPACT (context-guard). This session has reached a context line.', turnId: 't1' } as never)
+  await clock.advance(90_000)
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await $.turn.complete(turnEnd())
+
+  await $.turn.start({ text: 'answer him', turnId: 't2' } as never)
+  await clock.advance(30_000)
+  await $.tool.call(compactNow(NOTES))
+  await clock.advance(60_000)
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await $.turn.complete(turnEnd())
+  await clock.advance(2_000)
+  expect(h.files[LT_LOG]).toBe(undefined)
+})
+
+test('long turn: beside the one-message guard, the held text and the long turn note ride the same tool result', async ($, on) => {
+  const clock = mock.clock(on)
+  harness(on, { fetchOk: true })
+  omt(on, [[T('Some text first. '), TOOL, STOP('tool_use')], [T('Final.'), STOP('end_turn')]])
+  await $.session.start(START)
+  await $.turn.start({ text: 'hi', turnId: 't1' } as never)
+  await clock.advance(70_000)
+  expect((await runStep($ as never, 0)).text).toBe('')
+  const r = (await $.tool.call(X)) as Called
+  expect(r.result).toBe('tool ran')
+  expect(String(r.context)).toContain(HELD_NOTE)
+  expect(String(r.context)).toContain(LONG_NOTE)
+  expect((await runStep($ as never, 1)).text).toBe(`${BREAK}\n\nFinal.`)
+})
+
+// ---------- The Peck type (item 18) and the 60-second ask (item 19), 1.0.31 ----------
+
+const ASK_TOOL = 'mcp__context-guard__ask_a_peck'
+const ask = (more: Record<string, unknown> = {}) =>
+  ({ tool: ASK_TOOL, higher: 'Fable at Max', lower: 'Opus at Extra', job: 'Audit the rules copies.', ...more }) as never
+// Chris's three lines, approved 2026-11-22 ("3 approved"); the trailing period of the job is dropped.
+const BOX_TEXT = 'Job: Audit the rules copies\nRun this Peck on Fable at Max?\nNo answer in 60 seconds: Opus at Extra.'
+const LOWER_LINE = (why: string) =>
+  `"In your report, say in one line that you ran on Opus at Extra, lower than the main wanted (Fable at Max): ${why}."`
+const P40_START = { cwd: 'C:/Project', surface: 'desktop', isInteractive: true } as never
+
+test('Peck type: registered at session start as context-guard:peck, Opus at High, every tool, compacts at 300,000', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(WORKER_TYPE).toBe('context-guard:peck')
+  expect(h.agents.length).toBe(1)
+  const spec = h.agents[0] as Record<string, unknown>
+  expect(spec.name).toBe('peck')
+  expect(spec.model).toBe('opus')
+  expect(spec.effort).toBe('high')
+  expect(spec.autoCompactWindow).toBe(300_000)
+  expect(WORKER_COMPACT_AT).toBe(300_000)
+  expect('tools' in spec).toBe(false)
+  expect(String(spec.description)).toContain('in place of general-purpose')
+  expect(String(spec.prompt).length > 200).toBe(true)
+  // A reload registers it again (the engine replaces a type of the same name).
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(h.agents.length).toBe(2)
+})
+
+test('Peck type: a refused registration does not stop session start; the tools still register and the rules still ride', async ($, on) => {
+  const h = harness(on, { fetchOk: true, agentThrows: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(h.registered.some(r => r.name === 'ask_a_peck' && r.isDeferred === true)).toBe(true)
+  const r = await $.prompt.submit({ text: 'hello' })
+  expect((r.context ?? []).some(c => c.startsWith('STANDING RULES FROM THE REPO'))).toBe(true)
+})
+
+test('ask a Peck: the tool is deferred; a tap on the higher option starts the Peck on it, with no brief line', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, answer: 'Fable at Max' })
+  await $.session.start(P40_START)
+  expect(h.registered.some(r => r.name === 'ask_a_peck' && r.isDeferred === true)).toBe(true)
+  const r = (await $.tool.call(ask())) as { result?: string }
+  expect(h.asked).toEqual([BOX_TEXT])
+  expect(WORKER_BOX.test(h.asked[0] ?? '')).toBe(true)
+  expect(h.buttons[0]).toEqual(['Fable at Max', 'Opus at Extra'])
+  expect(r.result).toBe('USE: Fable at Max. Chris picked it in the box. Start the Peck on it now.')
+  // Nothing is left waiting: the minute passing afterwards changes nothing.
+  await clock.advance(70_000)
+})
+
+test('ask a Peck: a tap on the lower option starts lower, with no brief line (his pick, Chris "1" 2026-11-22)', async ($, on) => {
+  mock.clock(on)
+  harness(on, { fetchOk: true, answer: 'Opus at Extra' })
+  await $.session.start(P40_START)
+  const r = (await $.tool.call(ask())) as { result?: string }
+  expect(r.result).toBe('USE: Opus at Extra. Chris picked it in the box. Start the Peck on it now.')
+  expect(String(r.result)).not.toContain('In your report')
+})
+
+test('ask a Peck: no answer in a minute means the lower option; the companion takes the box down at its minute', async ($, on) => {
+  const clock = mock.clock(on)
+  // The box under the mod: nobody taps; the companion closes it at its own minute (a deny, so the ask rejects).
+  const h = harness(on, { fetchOk: true, answer: 'DISMISS', askWait: () => clock.sleep(60_000) })
+  await $.session.start(P40_START)
+  let settled: { result?: string } | undefined
+  const call = ($.tool.call(ask()) as Promise<{ result?: string }>).then(r => {
+    settled = r
+  })
+  await clock.advance(59_000)
+  expect(settled).toBe(undefined)
+  await clock.advance(2_000)
+  await call
+  expect(h.asked.length).toBe(1)
+  expect(settled?.result).toBe(
+    `USE: Opus at Extra. No answer in 1 minute. Start the Peck on it now, and put this line in its brief, word for word: ${LOWER_LINE('Chris did not answer the 60-second box')}`,
+  )
+  expect(String(settled?.result)).not.toContain(WORKER_STILL_UP)
+  expect(h.files[P40_LOG_FILE]).toContain('ask_a_peck, Fable at Max or Opus at Extra: none')
+  expect(h.files[P40_LOG_FILE]).not.toContain('still up')
+})
+
+test('ask a Peck: when no companion takes the box down, the answer says it is still on his screen, and the log says why', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, askWait: () => new Promise(() => undefined) })
+  await $.session.start(P40_START)
+  let settled: { result?: string } | undefined
+  const call = ($.tool.call(ask()) as Promise<{ result?: string }>).then(r => {
+    settled = r
+  })
+  await clock.advance(60_500)
+  expect(settled).toBe(undefined)
+  await clock.advance(3_000)
+  await call
+  expect(String(settled?.result)).toContain('USE: Opus at Extra. No answer in 1 minute.')
+  expect(String(settled?.result)).toContain(LOWER_LINE('Chris did not answer the 60-second box'))
+  expect(String(settled?.result).endsWith(WORKER_STILL_UP)).toBe(true)
+  expect(h.files[P40_LOG_FILE]).toContain('the companion box closer is not loaded in this session')
+})
+
+test('ask a Peck: a box closed with no pick inside the minute, and words typed instead of a tap', async ($, on) => {
+  mock.clock(on)
+  const h = harness(on, { fetchOk: true, answer: 'DISMISS' })
+  await $.session.start(P40_START)
+  const closed = (await $.tool.call(ask())) as { result?: string }
+  expect(closed.result).toBe(
+    `USE: Opus at Extra. The box closed with no pick. Start the Peck on it now, and put this line in its brief, word for word: ${LOWER_LINE('Chris closed the box without a pick')}`,
+  )
+  expect(h.asked.length).toBe(1)
+})
+
+test('ask a Peck: words typed in the box go back to the main with the lower option as the fallback', async ($, on) => {
+  mock.clock(on)
+  harness(on, { fetchOk: true, answer: 'use fable but only at high' })
+  await $.session.start(P40_START)
+  const r = (await $.tool.call(ask())) as { result?: string }
+  expect(String(r.result)).toContain('Chris typed in the box instead of tapping: "use fable but only at high"')
+  expect(String(r.result)).toContain('USE: Opus at Extra')
+  expect(String(r.result)).toContain(LOWER_LINE('Chris typed in the box instead of picking'))
+})
+
+test('ask a Peck: no box on an unattended run, in a Peck session, or from a subagent: the lower option at once, with the line', async ($, on) => {
+  mock.clock(on)
+  const h = harness(on, { fetchOk: true, answer: 'Fable at Max' })
+  on('session.id', () => ({ value: 'worker-1' }))
+  await $.session.start(P40_START)
+  const away = (await $.tool.call(ask({ unattended: true }))) as { result?: string }
+  expect(away.result).toBe(
+    `USE: Opus at Extra. No box: an unattended run, so nobody was asked. Start the Peck on it now, and put this line in its brief, word for word: ${LOWER_LINE('an unattended run, so nobody was asked')}`,
+  )
+  const sub = (await $.tool.call(ask({ agentId: 'agent-1' }))) as { result?: string }
+  expect(String(sub.result)).toContain('No box: it was started from inside a Peck, so nobody was asked.')
+  expect(h.asked.length).toBe(0)
+  // A session whose brief carried the Peck marker (item 17).
+  await $.prompt.submit({ text: 'You are a Peck session for Porter.\nLONG TURNS OK\nDo the build.' })
+  const peck = (await $.tool.call(ask())) as { result?: string }
+  expect(String(peck.result)).toContain('No box: a Peck session, so nobody was asked.')
+  expect(String(peck.result)).toContain(LOWER_LINE('a Peck session, so nobody was asked'))
+  expect(h.asked.length).toBe(0)
+})
+
+test('ask a Peck: a call that does not name two different options is refused and asks nothing', async ($, on) => {
+  const h = harness(on, { fetchOk: true })
+  await $.session.start(P40_START)
+  expect(String(((await $.tool.call(ask({ higher: '' }))) as { result?: string }).result)).toContain('Refused')
+  expect(String(((await $.tool.call(ask({ higher: 'opus at extra' }))) as { result?: string }).result)).toContain('Refused')
+  expect(h.asked.length).toBe(0)
+})
+
+test("ask a Peck: the minute the box waits on him is not the turn's own time", async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, answer: 'DISMISS', askWait: () => clock.sleep(60_000) })
+  omt(on, [])
+  await $.session.start(START)
+  await $.turn.start({ text: 'start the audit Peck', turnId: 't1' } as never)
+  await clock.advance(20_000)
+  const asking = $.tool.call(ask())
+  await clock.advance(61_000)
+  await asking
+  // 81 seconds on the wall, 20 of its own.
+  expect(((await $.tool.call(X)) as Called).context).toBe(undefined)
+  await $.turn.complete(turnEnd())
+  expect(h.files[LT_LOG]).toBe(undefined)
+})
+
+test('P40: a box still up a moment after its minute is noted in the P40 log; one the companion took down is not', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, askWait: () => new Promise(() => undefined) })
+  await $.session.start(P40_START)
+  await $.session.measure(measure(61))
+  await clock.advance(61_100)
+  expect(sentGo(h).length).toBe(1)
+  expect(h.files[P40_LOG_FILE] ?? '').not.toContain('still up')
+  await clock.advance(3_000)
+  expect(h.files[P40_LOG_FILE]).toContain('the 61% box is still up after its minute')
+})
+
+test('P40: a box the companion takes down at its minute leaves no still-up line', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, answer: 'DISMISS', askWait: () => clock.sleep(60_000) })
+  await $.session.start(P40_START)
+  await $.session.measure(measure(61))
+  await clock.advance(65_000)
+  expect(sentGo(h).length).toBe(1)
+  expect(h.files[P40_LOG_FILE] ?? '').not.toContain('still up')
 })

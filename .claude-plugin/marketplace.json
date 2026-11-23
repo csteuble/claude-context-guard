@@ -7,7 +7,7 @@
     {
       "name": "context-guard",
       "source": "./",
-      "version": "1.0.28"
+      "version": "1.0.31"
     },
     {
       "name": "context-guard-box",
@@ -16,7 +16,7 @@
         "repo": "csteuble/claude-context-guard",
         "ref": "box"
       },
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }

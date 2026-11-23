@@ -87,6 +87,35 @@
 //    a meta prompt, a shortcut, or the mod's own auto compact prompt (a plugin origin). A turn with none of his
 //    words (the mod's prompt, a task notification) keeps the bare line of item 12. Shortcut replies, the working
 //    line, the auto compact start line, the guard off, and subagents: no header, as before.
+// 17. The long turn guard (1.0.30, Chris 2026-11-22: "you do shit in the background and maybe I wanna make that a
+//    rule so that you can fucking answer me and we keep replying"). A message he sends while a turn runs does not
+//    reach the session until the turn ends, so a long turn means he is ignored, and a rule alone had not held. In a
+//    main session only: a shell call that plainly waits over a minute in the foreground is refused with the order
+//    to run it in the background and end the turn; once a turn has run over a minute, a note rides beside the next
+//    tool result (at most once a minute) to hand the rest to the background and end the turn; and every turn that
+//    ran over a minute gets a line in Long Turn Log.txt beside the P40 log. Time a question box waits on him and
+//    time a compaction takes are not the turn's; the mod's own auto compact turn is left alone. A worker says so:
+//    a line LONG TURNS OK in its brief (the engine gives a mod nothing that tells his main from a worker another
+//    session started). The whole message "Long turn off" switches it off in every session, "Long turn on" back.
+// 18. The Peck type (1.0.31; Chris "1", 2026-11-22 11:50, and his worker effort and model ruling of 12:59): the mod
+//    registers a subagent type, context-guard:peck, so a Peck a main starts as that type gets his defaults without
+//    naming them: Opus at High effort, every tool the main has, and it compacts its own conversation at 300,000
+//    tokens (Porter's number on the card he picked; he did not change it). A model or effort named on the start
+//    still wins (rule E1 has the main name them by the job). The name is his (2026-11-22 evening: "I don't think
+//    they're workers. they're pecks", then "Pecks"); until then it was the placeholder "worker".
+// 19. The 60-second ask for Fable or Max (1.0.31; rule E6, Chris 2026-11-22 13:08): a deferred tool, ask_a_peck (his
+//    phone shows the call as "Used Ask a Peck"; his name, 2026-11-22 evening), the main calls as the last thing before
+//    a Peck start when it thinks the job needs Fable or Max. It shows a box with two buttons (the higher option, the
+//    lower one) and waits a minute; no answer, or a closed box, means the lower option. The box's three lines are his,
+//    approved as shown ("3 approved"): "Job: <the job>", "Run this Peck on <the higher option>?", and "No answer in
+//    60 seconds: <the lower option>.". No box on an unattended run (the call says unattended: true), in a Peck session
+//    (its brief carried LONG TURNS OK, item 17), or from a subagent: the lower option, straight off. When the answer
+//    is the lower option, it hands the main one line for the Peck's brief, so the Peck's report says it ran lower than
+//    the main wanted; not when he tapped the lower option himself (Chris "1", 2026-11-22 evening): then the line is
+//    handed only for no box, no answer in the minute, a box closed with no pick, or words typed instead of a tap. The mod cannot take its own box down (an ask skips the asking mod's hooks; tested 2026-11-22), so the
+//    companion plugin context-guard-box closes it at its minute, as it does the P40 box. When the box is still up a
+//    moment after the minute (the companion is not loaded in that session), the answer says so and the P40 log notes
+//    it; the P40 box (item 11) gets the same note in the log.
 import type { EngineInterface, Register, TurnStepChunk } from 'claude-code'
 
 import { RULES, RULES_URL } from './rules'
@@ -262,6 +291,17 @@ export const FULL_ROW_ORDER =
   'arguments (load it among your first tool calls with ToolSearch, query "select:mcp__context-guard__-_view_full_message"). The mod turns QUOTE into the quote of his ' +
   'words, and the row opens to his whole message. Then write your message in the next step, with no quote and ' +
   'no line of dashes of your own above it. Do not mention the row or this order.'
+// 1.0.29 (Chris: "make the mod place it by itself so it can't be missed"): a row call with no QUOTE text before it
+// in its step is folded away on his phone. The mod cannot put a text block of its own in front of it: the engine
+// keeps a step's blocks by their index, so a new block there would have to take the call's index and push the
+// call and every later block along, and the engine's own record of the call would be thrown away. So the tool
+// sends that call back, at most OMT_ROW_REDOS times a turn, and the model makes the row again the right way.
+export const OMT_ROW_REDOS = 2
+export const FULL_ROW_REDO =
+  'FULL MESSAGE ROW (context-guard): NOT SHOWN. This call came in a step with no text QUOTE before it, so his ' +
+  'phone folds it away and he cannot see the row. Call this tool again now, in a step that holds only the text ' +
+  'QUOTE and this one call with no arguments, then write your message in the next step, with no quote and no ' +
+  'line of dashes of your own above it. Do not mention the row or this order.'
 // Where a message he typed comes from: the terminal, the phone (Remote Control), the desktop app's SDK host. An
 // event with no origin (only the test harness raises one) counts as typed.
 const OMT_TYPED_ORIGINS = new Set(['composer', 'bridge', 'sdk'])
@@ -282,6 +322,184 @@ export const OMT_HELD_NOTE = (held: string) =>
   'held text below, once. Write no other text before the tools are done.\nHELD TEXT BEGIN\n' +
   (held.length > OMT_HELD_MAX ? held.slice(0, OMT_HELD_MAX) + '\n[cut]' : held) +
   '\nHELD TEXT END'
+
+// The long turn guard (item 17). Off only when the stored flag is exactly false.
+export const LT_LIMIT_MS = 60_000
+const LT_STORE_KEY = 'longTurn'
+// The ids of sessions whose brief carried the worker marker, so a mod reload mid-run still knows them.
+const LT_WORKERS_KEY = 'longTurnWorkers'
+const LT_WORKERS_MAX = 100
+// The whole message "Long turn on" or "Long turn off" ("turns" too), any capitals, trailing periods or spaces.
+export const LT_SWITCH = /^\s*long\s+turns?\s+(on|off)[\s.]*$/i
+const LT_SWITCH_ORDER = (reply: string) =>
+  'CONTEXT-GUARD SHORTCUT: the message above is the long turn guard switch; the mod has already set it. ' +
+  `Reply with exactly this line and nothing else, no tool calls: ${reply}`
+// The worker's marker: a line holding only LONG TURNS OK, in its brief or any prompt it gets. His main and a worker
+// another session started look the same to a mod (both get their first prompt from the desktop app's host, and a
+// relay of his main starts exactly as a worker does), so the session that starts a worker says so. Only a line of
+// its own counts, so a message that merely talks about the marker leaves the guard on.
+export const LT_MARKER = /^[ \t]*LONG TURNS OK[ \t]*$/m
+const LT_LOG_NAME = 'Long Turn Log.txt'
+// A question box the model opens waits on him: that time is not the turn's. The mod's own boxes (the warning and
+// auto compact boxes, the box after a compaction, RULES BROKEN) pass through the same hook but do not hold the turn,
+// which runs on beside them, so they are known by their words and left alone.
+const LT_ASK_TOOL = /^AskUserQuestion$/
+const LT_OWN_BOX = /^(CONTEXT: \d|Context \d+%\. Auto compact|Auto-compacted at |RULES BROKEN|Job: [^\n]*\nRun this Peck on )/
+function ltAskText(e: unknown): string {
+  const q = (e as { questions?: Array<{ question?: unknown }> }).questions
+  return Array.isArray(q) && typeof q[0]?.question === 'string' ? q[0].question : ''
+}
+export const LT_WAIT_DENY = (why: string) =>
+  `(context-guard) LONG WAIT REFUSED: ${why}, so this call could hold the turn over a minute, and Chris's ` +
+  'messages cannot reach this session until the turn ends. Run it again with run_in_background: true (you are ' +
+  'told when it finishes), say one line, and end your turn. If it truly ends within a minute, give it a timeout ' +
+  'of 60000 or less instead.'
+export const LT_TURN_NOTE = (mins: number) =>
+  `(context-guard) LONG TURN: this turn has run over ${mins} min, and Chris's messages cannot reach you until it ` +
+  'ends. Hand what is left to a background worker (the Agent tool with run_in_background: true) or a background ' +
+  'command (run_in_background: true), say one line, and end the turn now. A check of a worker\'s result that ' +
+  'runs long goes to a worker too, or is cut into pieces.'
+
+// The Peck type (item 18). "Peck" is Chris's word for a helper (2026-11-22 evening); the type is
+// context-guard:<name>. The constants keep their WORKER_ names.
+export const WORKER_NAME = 'peck'
+export const WORKER_TYPE = `context-guard:${WORKER_NAME}`
+// Where the Peck compacts its own conversation: Porter's number on the card Chris picked (11:50, "1").
+export const WORKER_COMPACT_AT = 300_000
+// His defaults for the type (12:59): Opus at High. Tools are left out, so the Peck has every tool the main has.
+export const WORKER_SPEC = {
+  name: WORKER_NAME,
+  description:
+    "Chris's Peck (his word for a background worker): use this type for every Peck a main starts (builds, searches, " +
+    'applying, checks), in place of general-purpose. It runs on Opus at High effort unless the start names another ' +
+    'model or effort (his rule E1: name them by the job: audits and argued work opus at xhigh; building and applying ' +
+    'opus at high; mechanical checks sonnet at high). It has every tool the main has, and compacts its own ' +
+    'conversation at 300,000 tokens and keeps going.',
+  prompt:
+    "You are a Peck (Chris's word for a background worker) for Claude Code, Anthropic's official CLI for Claude, " +
+    'started by a main session to do one job. ' +
+    'The first message is your brief. Do the whole job it gives with the tools you have, then end with a concise ' +
+    'report of what you did and what you found: the main session reads your report, not your tool output, and ' +
+    'relays what matters. Complete the job fully, and add nothing it did not ask for.\n\n' +
+    'Your strengths: searching for code, settings, and patterns across many files; reading several files to ' +
+    'understand how a system fits together; multi-step research and build work.\n\n' +
+    'Guidelines:\n' +
+    '- To find a file, search broadly when you do not know where it lives; read it directly when you know the path.\n' +
+    '- For analysis, start broad and narrow down; try another search when the first finds nothing.\n' +
+    '- Be thorough: check more than one place and more than one naming style.\n' +
+    '- Create no file unless the job needs it, and edit an existing file rather than write a new one. Write no ' +
+    'report, summary, or notes file unless the brief asks for one: your last message is the report.\n' +
+    '- In the report, give absolute file paths, and quote code only where its exact text matters.\n' +
+    '- No emojis.\n' +
+    '- You are the Peck for this job: do it yourself, and do not hand the whole job to another single Peck.\n' +
+    '- Your conversation compacts by itself when it grows past 300,000 tokens, and you keep going after that. Keep ' +
+    "the brief's exact paths, numbers, and limits where you can find them again (the brief, or a progress file the " +
+    'brief names).',
+  model: 'opus',
+  effort: 'high',
+  autoCompactWindow: WORKER_COMPACT_AT,
+} as const
+
+// The 60-second ask for Fable or Max (item 19). The box's three lines and the tool's name are Chris's (2026-11-22
+// evening). The companion's WORKER_BOX pattern must match WORKER_ASK_TEXT: keep the two in step.
+const WORKER_ASK_TOOL = /__ask_a_peck$/
+export const WORKER_ASK_MS = 60_000
+// How long after the minute the mod waits to see the companion take the box down.
+export const WORKER_ASK_GRACE_MS = 3_000
+const WORKER_LABEL_MAX = 40
+const WORKER_JOB_MAX = 120
+export const WORKER_ASK_TEXT = (higher: string, lower: string, job: string) =>
+  `Job: ${job}\nRun this Peck on ${higher}?\nNo answer in 60 seconds: ${lower}.`
+export const WORKER_BOX = /^Job: [^\n]*\nRun this Peck on [^\n]+\?\nNo answer in 60 seconds: [^\n]+\.$/
+// The one line for the Peck's brief whenever it runs lower than the main wanted (rule E6).
+export const WORKER_LOWER_LINE = (lower: string, higher: string, why: string) =>
+  `In your report, say in one line that you ran on ${lower}, lower than the main wanted (${higher}): ${why}.`
+export const WORKER_STILL_UP =
+  "The box is still on Chris's screen (the companion plugin that closes it is not loaded in this session) and no " +
+  'longer counts: say so in one line in your message.'
+const workerLabel = (v: unknown): string => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, WORKER_LABEL_MAX)
+const workerJob = (v: unknown): string =>
+  String(v ?? '').replace(/\s+/g, ' ').trim().replace(/[.\s]+$/, '').slice(0, WORKER_JOB_MAX)
+const WORKER_USE = (use: string, how: string, line?: string, extra?: string) =>
+  `USE: ${use}. ${how}` +
+  (line === undefined ? ' Start the Peck on it now.' : ` Start the Peck on it now, and put this line in its brief, word for word: "${line}"`) +
+  (extra === undefined ? '' : ` ${extra}`)
+
+// What a shell command sleeps, in seconds, read from its text; Infinity for a loop with no fixed end that sleeps.
+// Script text a command only writes (a heredoc, a PowerShell here-string) is left out, and a sleep counts only
+// where a command starts, so a sleep inside a file being written or a sentence is not read as a wait.
+const LT_HEREDOC = /<<-?[ \t]*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\r?\n|$)/g
+const LT_HERESTRING = /@(['"])\r?\n[\s\S]*?\r?\n\1@/g
+const LT_AT = String.raw`(?:^|[;&|({}\n"'` + '`' + String.raw`]|\bdo\b|\bthen\b|\belse\b)\s*`
+const LT_SLEEP = new RegExp(LT_AT + String.raw`(?:start-sleep|sleep)((?:\s+-[a-z]+)?)\s+(\d+(?:\.\d+)?)([smhd]?)(?![\w.])`, 'gi')
+const LT_CMD_TIMEOUT = new RegExp(LT_AT + String.raw`timeout(?:\.exe)?\s+/t\s+(\d+)`, 'gi')
+const LT_THREAD_SLEEP = /Threading\.Thread\]::Sleep\(\s*(\d+)\s*\)/gi
+const LT_PY_SLEEP = /\btime\.sleep\(\s*(\d+(?:\.\d+)?)\s*\)/g
+const LT_ANY_LOOP = new RegExp(LT_AT + String.raw`(?:for|foreach|while|until)\b|\bdo\s*\{|\bforeach-object\b|\|\s*%\s*\{`, 'i')
+
+function ltSleepSeconds(command: string): number {
+  const cmd = command.replace(LT_HEREDOC, '').replace(LT_HERESTRING, '')
+  const unit: Record<string, number> = { '': 1, s: 1, m: 60, h: 3600, d: 86400 }
+  let slept = 0
+  for (const m of cmd.matchAll(LT_SLEEP)) {
+    const flag = (m[1] ?? '').trim().toLowerCase()
+    const n = Number(m[2])
+    // PowerShell's -Milliseconds (or -ms, -m); bash takes a unit letter after the number.
+    slept += flag.startsWith('-m') ? n / 1000 : n * (unit[(m[3] ?? '').toLowerCase()] ?? 1)
+  }
+  for (const m of cmd.matchAll(LT_CMD_TIMEOUT)) slept += Number(m[1])
+  for (const m of cmd.matchAll(LT_THREAD_SLEEP)) slept += Number(m[1]) / 1000
+  for (const m of cmd.matchAll(LT_PY_SLEEP)) slept += Number(m[1])
+  if (slept === 0 || !LT_ANY_LOOP.test(cmd)) return slept
+  return slept * ltLoopCount(cmd)
+}
+
+// How many times a loop in the command runs: a count it states (a list, a range, a counted for), else Infinity.
+// With more than one loop, the largest count, so a guess never makes the wait look longer than it is.
+function ltLoopCount(cmd: string): number {
+  if (new RegExp(LT_AT + String.raw`(?:while|until)\b|\bdo\s*\{`, 'i').test(cmd)) return Infinity
+  let most = 0
+  let found = 0
+  // bash: for x in a b c; do / for x in {1..9} / for x in $(seq 9)
+  for (const m of cmd.matchAll(/\bfor\s+\w+\s+in\s+([^;\n]*)/gi)) {
+    found += 1
+    const list = (m[1] ?? '').trim()
+    const range = /^\{(\d+)\.\.(\d+)\}$/.exec(list)
+    const seq = /^\$\(\s*seq\s+(\d+)(?:\s+(\d+))?\s*\)$/.exec(list)
+    if (range) most = Math.max(most, Math.abs(Number(range[2]) - Number(range[1])) + 1)
+    else if (seq) most = Math.max(most, seq[2] === undefined ? Number(seq[1]) : Number(seq[2]) - Number(seq[1]) + 1)
+    else if (/[$*?`]/.test(list)) return Infinity
+    else most = Math.max(most, list.split(/\s+/).filter(w => w.length > 0).length)
+  }
+  // bash for ((i=0; i<9; i++)) and PowerShell for ($i = 0; $i -lt 9; $i++)
+  for (const m of cmd.matchAll(/\bfor\s*\(\(?\s*\$?\w+\s*=\s*(\d+)\s*;\s*\$?\w+\s*(<=|<|-le|-lt)\s*(\d+)/gi)) {
+    found += 1
+    const inclusive = m[2] === '<=' || (m[2] ?? '').toLowerCase() === '-le'
+    most = Math.max(most, Number(m[3]) - Number(m[1]) + (inclusive ? 1 : 0))
+  }
+  // PowerShell foreach / ForEach-Object / % over a range 1..9
+  if (/\bforeach\b|\bforeach-object\b|\|\s*%\s*\{/i.test(cmd)) {
+    found += 1
+    const range = /(\d+)\s*\.\.\s*(\d+)/.exec(cmd)
+    if (range === null) return Infinity
+    most = Math.max(most, Math.abs(Number(range[2]) - Number(range[1])) + 1)
+  }
+  return found === 0 ? Infinity : Math.max(most, 1)
+}
+
+// Why a shell call is a long foreground wait, or undefined when it is not. A call in the background never is. A
+// call with a timeout of a minute or less cannot hold the turn longer, so only its timeout is read; one with no
+// timeout (two minutes by default) is a wait when its sleeps add to over a minute, or it sleeps in an open loop.
+export function ltShellWait(input: { command?: unknown; timeout?: unknown; run_in_background?: unknown }): string | undefined {
+  if (input.run_in_background === true) return undefined
+  const timeout = Number(input.timeout)
+  if (input.timeout !== undefined && Number.isFinite(timeout)) {
+    return timeout > LT_LIMIT_MS ? `its timeout is ${Math.round(timeout / 1000)} seconds` : undefined
+  }
+  const slept = ltSleepSeconds(typeof input.command === 'string' ? input.command : '')
+  if (slept === Infinity) return 'it sleeps inside a loop with no fixed end'
+  return slept > LT_LIMIT_MS / 1000 ? `it sleeps about ${Math.round(slept)} seconds in all` : undefined
+}
 
 // A line holding only a non-breaking space, so the chat cannot squeeze a blank line away.
 const BLANK = ' '
@@ -352,9 +570,101 @@ let omtStartWords: string | null | undefined
 let omtTyped: string[] = []
 // Item 15: the words whose quote already went out above a full-message row, so their reply is not stamped again.
 let omtRowFor: string | undefined
+// 1.0.29: the words whose quote went out above a row this turn (kept after the reply, so a later row call never
+// prints it twice); whether the latest row call came in a step with no marker before it; and how many times this
+// turn the tool has sent such a call back to be made again.
+let omtRowShown: string | undefined
+let omtRowBare = false
+let omtRowRedos = 0
 // The words the reply now due answers: the oldest message typed mid-turn that is still owed a reply, else the
 // turn's own.
 const omtDueWords = (): string | undefined => (omtPass > 0 ? omtPassWords[0] : omtWords)
+
+// The long turn guard (item 17): the switch as read at the turn's start; whether this session is a worker (its
+// brief carried the marker) and whether the stored list was read since the mod loaded; the session's title for
+// the log. Then the running main-loop turn: when it started (undefined between turns), the time a box or a
+// compaction held it, how many such holds are open now and since when, its tool calls, the turn time at which the
+// last note went, and whether it is the mod's own auto compact turn (or one that called compact_now).
+let ltOn = true
+let ltWorker = false
+let ltWorkerRead = false
+let ltTitle: string | undefined
+let ltStart: number | undefined
+let ltPaused = 0
+let ltOpen = 0
+let ltOpenFrom = 0
+let ltCalls = 0
+let ltNoted: number | undefined
+let ltExempt = false
+let ltStartExempt = false
+
+async function ltNow($: EngineInterface): Promise<number> {
+  try {
+    return await $.clock.now()
+  } catch {
+    return Date.now()
+  }
+}
+
+// The running turn's own time: wall time less what a box or a compaction held.
+function ltElapsed(now: number): number {
+  if (ltStart === undefined) return 0
+  return now - ltStart - ltPaused - (ltOpen > 0 ? now - ltOpenFrom : 0)
+}
+
+function ltHold(now: number): void {
+  if (ltOpen === 0) ltOpenFrom = now
+  ltOpen += 1
+}
+
+function ltRelease(now: number): void {
+  if (ltOpen === 0) return
+  ltOpen -= 1
+  if (ltOpen === 0) ltPaused += now - ltOpenFrom
+}
+
+// The guard acts on a main session's own loop, with the switch on.
+const ltActive = (agentId: string | undefined): boolean => agentId === undefined && ltOn && !ltWorker
+
+async function ltSessionId($: EngineInterface): Promise<string | undefined> {
+  try {
+    const id = await $.session.id()
+    return typeof id === 'string' && id.length > 0 ? id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function ltReadWorker($: EngineInterface): Promise<void> {
+  ltWorkerRead = true
+  const id = await ltSessionId($)
+  if (id === undefined) return
+  try {
+    const ids = await $.store.get(LT_WORKERS_KEY)
+    if (Array.isArray(ids) && ids.includes(id)) ltWorker = true
+  } catch {
+    // unread: the session counts as a main
+  }
+}
+
+async function ltMarkWorker($: EngineInterface): Promise<void> {
+  ltWorker = true
+  ltWorkerRead = true
+  const id = await ltSessionId($)
+  if (id === undefined) return
+  try {
+    const old = await $.store.get(LT_WORKERS_KEY)
+    const ids = Array.isArray(old) ? old.filter((x): x is string => typeof x === 'string' && x !== id) : []
+    await $.store.set(LT_WORKERS_KEY, [...ids.slice(-(LT_WORKERS_MAX - 1)), id])
+  } catch {
+    // kept for this load of the mod only
+  }
+}
+
+function ltTakeTitle(e: unknown): void {
+  const t = (e as { session_title?: unknown }).session_title
+  if (typeof t === 'string' && t.trim().length > 0) ltTitle = t.trim()
+}
 
 function omtTypedWords(e: { text: string; origin?: { kind: string } }, isShortcut: boolean): string | undefined {
   if (isShortcut || e.text.startsWith(P40_GO_HEAD) || OMT_APP_NOTE.test(e.text)) return undefined
@@ -369,10 +679,91 @@ function omtForget(words: string): void {
   if (i >= 0) omtTyped.splice(i, 1)
 }
 
+// A quote line as plain words: the quote bar, the italics around it, a trailing "…" or "...", and the escapes
+// taken off, and the spaces made single.
+function omtPlainQuote(line: string): string {
+  let s = line.replace(/^\s*(?:>\s*)+/, '').trim().replace(/^[*_]+/, '')
+  for (let was = ''; was !== s; ) {
+    was = s
+    s = s.replace(/(?<!\\)[*_]+$/, '').replace(/(?:…|\.\.\.)$/, '').trimEnd()
+  }
+  return s.replace(/\\(.)/g, '$1').replace(/\s+/g, ' ').trim()
+}
+
+// 1.0.31 fix (his phone, 2026-11-22 19:38): the model sometimes types its own quote of his words at the top of its
+// text, and a copy that differs a little from the mod's (a double space, a cut at another length) showed his words
+// twice. Counts the characters of the quote lines (`>` lines, blank lines between them allowed) at the start of
+// `text` that are a copy of his words: cleaned, they equal his cleaned words or one is a prefix of the other. A
+// copy shorter than 10 characters counts only when his words are that short too. 0 when the text opens with no
+// copy; a quote line that is not a copy stays, and so does every line after it.
+export function omtCopyLength(text: string, words: string): number {
+  const his = words.replace(/\s+/g, ' ').trim()
+  if (his === '') return 0
+  let at = 0
+  let end = 0
+  let acc = ''
+  while (at < text.length) {
+    const nl = text.indexOf('\n', at)
+    const stop = nl < 0 ? text.length : nl + 1
+    const line = text.slice(at, stop)
+    if (line.trim() === '') {
+      at = stop
+      continue
+    }
+    if (!/^\s*>/.test(line)) break
+    const next = `${acc} ${omtPlainQuote(line)}`.trim()
+    const isLong = next.length >= Math.min(his.length, 10)
+    if (his.startsWith(next)) {
+      if (next !== '' && isLong) end = stop
+    } else if (next.startsWith(his) && acc.length < his.length) {
+      // The line that runs past his words ends the copy.
+      if (isLong) end = stop
+      break
+    } else break
+    acc = next
+    at = stop
+  }
+  return end
+}
+
+// The characters a reply's typed header takes at its start: an optional line of dashes, then a typed copy of his
+// quote (omtCopyLength), with the blank lines after them. 0 when no copy follows, so a lone line is left as it was.
+function omtTypedCopy(said: string, words: string | undefined): number {
+  if (words === undefined) return 0
+  const lead = said.trimStart()
+  let rest = lead.startsWith(OMT_BREAK) ? lead.slice(OMT_BREAK.length).trimStart() : lead
+  const n = omtCopyLength(rest, words)
+  if (n === 0) return 0
+  rest = rest.slice(n).trimStart()
+  return said.length - rest.length
+}
+
+// Takes the first `total` characters off a message's text chunks and puts `header` on the first text chunk.
+function omtCut(out: TurnStepChunk[], total: number, header: string): TurnStepChunk[] {
+  let cut = total
+  let isStamped = false
+  return out.map(c => {
+    if (c.kind !== 'text') return c
+    const drop = Math.min(cut, c.text.length)
+    cut -= drop
+    const text = c.text.slice(drop)
+    if (isStamped) return drop === 0 ? c : { ...c, text }
+    isStamped = true
+    return { ...c, text: header + text }
+  })
+}
+
+// The reply under a full-message row (item 15): its quote already went out above the row, so a copy of it the
+// model typed again at the top of the reply (with or without its own line of dashes) is taken out.
+function omtUnderRow(out: TurnStepChunk[], said: string, words: string | undefined): [TurnStepChunk[], string] {
+  const total = omtTypedCopy(said, words)
+  return total === 0 ? [out, said] : [omtCut(out, total, ''), said.slice(total)]
+}
+
 // The header goes above the first text chunk of a message, never doubled: the line alone for a turn with none of
 // his words, the line and then the quote of his words for a reply to a message he typed. Whatever part of it the
-// model wrote itself (its own line, the same quote, or both) is taken out first, and a message that already opens
-// with the whole header is left alone.
+// model wrote itself (its own line, the same quote or a near copy of his words, or both) is taken out first, and a
+// message that already opens with the whole header, exactly, is left alone.
 function omtStamp(out: TurnStepChunk[], said: string, words: string | undefined): [TurnStepChunk[], string] {
   const lead = said.trimStart()
   const quote = words === undefined ? '' : omtHeader(words)
@@ -386,20 +777,12 @@ function omtStamp(out: TurnStepChunk[], said: string, words: string | undefined)
   if (quote !== '' && rest.startsWith(quote.trimEnd())) {
     if (hadBreak) return [out, said]
     rest = rest.slice(quote.trimEnd().length).trimStart()
+  } else if (quote !== '' && words !== undefined) {
+    const n = omtCopyLength(rest, words)
+    if (n > 0) rest = rest.slice(n).trimStart()
   }
   const total = rest === lead ? 0 : said.length - rest.length
-  let cut = total
-  let isStamped = false
-  const stamped = out.map(c => {
-    if (c.kind !== 'text') return c
-    const drop = Math.min(cut, c.text.length)
-    cut -= drop
-    const text = c.text.slice(drop)
-    if (isStamped) return drop === 0 ? c : { ...c, text }
-    isStamped = true
-    return { ...c, text: header + text }
-  })
-  return [stamped, header + said.slice(total)]
+  return [omtCut(out, total, header), header + said.slice(total)]
 }
 
 function p40LogBeside(notes: string): void {
@@ -408,7 +791,18 @@ function p40LogBeside(notes: string): void {
 }
 
 async function p40Log($: EngineInterface, line: string): Promise<void> {
+  await logLine($, p40LogPath, line)
+}
+
+// The long turn log sits beside the P40 log, in the same folder.
+function ltLogPath(): string | undefined {
   const path = p40LogPath
+  if (path === undefined) return undefined
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return `${path.slice(0, cut + 1)}${LT_LOG_NAME}`
+}
+
+async function logLine($: EngineInterface, path: string | undefined, line: string): Promise<void> {
   if (path === undefined) return
   try {
     let old = ''
@@ -451,6 +845,24 @@ async function compactInPlace($: EngineInterface, ask: CompactAsk): Promise<void
   }
 }
 
+// The long turn guard (item 17): the end of a main-loop turn. One that ran over a minute of its own time gets one
+// line in the log beside the P40 log (kept, as P40's lines are, only if that folder exists): the time, the
+// session's title, the seconds, and its tool calls.
+async function ltEnd($: EngineInterface): Promise<void> {
+  if (ltStart === undefined) return
+  const ran = ltElapsed(await ltNow($))
+  const calls = ltCalls
+  const isLogged = ran > LT_LIMIT_MS && !ltExempt && ltOn && !ltWorker
+  ltStart = undefined
+  ltOpen = 0
+  ltPaused = 0
+  ltNoted = undefined
+  ltExempt = false
+  if (!isLogged) return
+  const title = ltTitle ?? (await ltSessionId($)) ?? 'untitled session'
+  await logLine($, ltLogPath(), `${title} | ${Math.round(ran / 1000)} s | ${calls} tool calls`)
+}
+
 // One message per turn (item 12): the end of a main-loop turn. Text that was held and never reached him (no
 // last message came, or the model never got it back) is shown beneath the turn's end, so nothing is lost.
 function omtEnd<R extends { text: string }>(result: R): R {
@@ -460,6 +872,9 @@ function omtEnd<R extends { text: string }>(result: R): R {
   omtPassWords = []
   omtWords = undefined
   omtRowFor = undefined
+  omtRowShown = undefined
+  omtRowBare = false
+  omtRowRedos = 0
   omtDue = []
   omtHeld = []
   return lost.length === 0 ? result : { ...result, text: lost.join('\n\n') }
@@ -527,6 +942,8 @@ function p40Go($: EngineInterface, pct: number, how: string): void {
 // answer) holds it until the next line. A dismissed box is no answer: the minute decides.
 function p40Ask($: EngineInterface, pct: number): void {
   let settled = false
+  // 1.0.31: whether the box is gone (answered, dismissed, or taken down by the companion).
+  let isGone = false
   const decide = (how: 'now' | 'wait' | 'timeout'): void => {
     if (settled) return
     settled = true
@@ -537,10 +954,60 @@ function p40Ask($: EngineInterface, pct: number): void {
     p40Go($, pct, how === 'now' ? 'Compact now' : 'no answer in 1 minute')
   }
   void $.ui.ask(P40_ASK_TEXT(pct), [...P40_BUTTONS]).then(
-    answer => decide(answer === P40_BUTTONS[0] ? 'now' : 'wait'),
-    () => undefined,
+    answer => {
+      isGone = true
+      decide(answer === P40_BUTTONS[0] ? 'now' : 'wait')
+    },
+    () => {
+      isGone = true
+    },
   )
-  $.clock.after(P40_ASK_MS, () => decide('timeout'))
+  $.clock.after(P40_ASK_MS, () => {
+    decide('timeout')
+    // The companion takes the box down at its own minute; a box still up a moment later means it is not loaded
+    // in this session (Porter 2026-11-22 17:58: the box stayed 17 minutes). The log says so.
+    $.clock.after(WORKER_ASK_GRACE_MS, () => {
+      if (!isGone) void p40Log($, `the ${pct}% box is still up after its minute: the companion box closer is not loaded in this session`)
+    })
+  })
+}
+
+// The 60-second ask (item 19): the box, then the minute, then a moment for the companion to take it down. It
+// answers what he picked ('higher' or 'lower'), his typed words, 'closed' for a box gone with no pick before the
+// minute, or 'none' for no answer in the minute, with whether the box is still up.
+type WorkerPick = { pick: 'higher' | 'lower' | 'typed' | 'closed' | 'none'; typed?: string; isStillUp: boolean }
+async function workerAsk($: EngineInterface, higher: string, lower: string, job: string): Promise<WorkerPick> {
+  type Box = { kind: 'answer'; a: string } | { kind: 'gone' }
+  const t0 = await ltNow($)
+  const box: Promise<Box> = $.ui.ask(WORKER_ASK_TEXT(higher, lower, job), [higher, lower]).then(
+    a => ({ kind: 'answer' as const, a }),
+    () => ({ kind: 'gone' as const }),
+  )
+  let minuteTimer: { cancel: () => void } | undefined
+  const minute = new Promise<'minute'>(resolve => {
+    minuteTimer = $.clock.after(WORKER_ASK_MS, () => resolve('minute'))
+  })
+  const first = await Promise.race([box, minute])
+  if (first !== 'minute') {
+    minuteTimer?.cancel()
+    if (first.kind === 'gone') {
+      // A box gone right at the minute is the companion's doing (its own minute can end a moment before this
+      // one's): no answer, not a box he closed.
+      const isAtMinute = (await ltNow($)) - t0 >= WORKER_ASK_MS - WORKER_ASK_GRACE_MS
+      return { pick: isAtMinute ? 'none' : 'closed', isStillUp: false }
+    }
+    if (first.a === higher) return { pick: 'higher', isStillUp: false }
+    if (first.a === lower) return { pick: 'lower', isStillUp: false }
+    return { pick: 'typed', typed: first.a, isStillUp: false }
+  }
+  // The minute decided: the lower option. A tap after it does not count.
+  let graceTimer: { cancel: () => void } | undefined
+  const grace = new Promise<'grace'>(resolve => {
+    graceTimer = $.clock.after(WORKER_ASK_GRACE_MS, () => resolve('grace'))
+  })
+  const after = await Promise.race([box, grace])
+  if (after !== 'grace') graceTimer?.cancel()
+  return { pick: 'none', isStillUp: after === 'grace' }
 }
 
 // The step of one warning line: lines 1 and 2 ask, line 3 starts with no box.
@@ -639,6 +1106,12 @@ export const register: Register = on => {
     tiersFired = 0
     p40GoSent = false
     p40RideNext = undefined
+    // Long turn guard: the worker list is read again at the next turn's start.
+    ltWorker = false
+    ltWorkerRead = false
+    ltStart = undefined
+    ltOpen = 0
+    ltPaused = 0
     // The P40 log sits in the project's notes folder; steps before the first notes file are kept only if
     // that folder already exists.
     const cwd = (e as { cwd?: unknown }).cwd
@@ -706,6 +1179,33 @@ export const register: Register = on => {
     } catch {
       // the row is an extra; the quote over the reply does not depend on it
     }
+    // The Peck type (item 18), guarded the same way: a refusal leaves the plain workers as they were.
+    try {
+      await $.agent.register(WORKER_SPEC)
+    } catch {
+      // a main can still start a general-purpose worker and name the model and effort itself
+    }
+    // The 60-second ask (item 19), guarded the same way.
+    try {
+      await $.tool.register({
+        name: 'ask_a_peck',
+        description:
+          "Rule E6: asks Chris whether a Peck (his word for a background worker) may run on Fable or at Max effort. Call it only when you think a Peck's job needs Fable or Max, as the last thing before you start that Peck (the Agent tool or start_session); load it with ToolSearch first. It shows him a box with two buttons and waits up to a minute; no answer means the lower option. Its answer starts with USE: and names the option to start the Peck on; when it hands you a line for the Peck's brief, put that line in the brief word for word. On an unattended run pass unattended: true: nobody is asked and the lower option comes back at once.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            higher: { type: 'string', description: 'The option you want, as Chris reads it, a few words: "Fable at Max", "Fable at High", or "Opus at Max".' },
+            lower: { type: 'string', description: 'The option the Peck runs on if he does not pick the higher one, a few words: "Opus at Extra" or "Opus at High".' },
+            job: { type: 'string', description: "The Peck's job in a few words, for the box." },
+            unattended: { type: 'boolean', description: 'true on an unattended run: no box, the lower option at once.' },
+          },
+          required: ['higher', 'lower', 'job'],
+        },
+        isDeferred: true,
+      })
+    } catch {
+      // without the tool the main starts lower and says so (rule E6)
+    }
     try {
       const u = await $.session.usage()
       if (await p40IsOn($)) {
@@ -746,6 +1246,10 @@ export const register: Register = on => {
         omtStartWords = undefined
       }
     }
+    // Long turn guard: a worker's brief carries the marker, and the mod's own auto compact prompt starts a turn
+    // the guard leaves alone.
+    if (LT_MARKER.test(e.text)) await ltMarkWorker($)
+    if (e.text.startsWith(P40_GO_HEAD)) ltStartExempt = true
     if (e.command || e.isMeta) return entering(undefined, () => next(e))
     if (TEST_SHORTCUT.test(e.text)) {
       const { pct } = await currentFill($)
@@ -757,8 +1261,13 @@ export const register: Register = on => {
     const context = [...(e.context ?? []), rulesText]
     const p40Switch = P40_SWITCH.exec(e.text)
     const omtSwitch = OMT_SWITCH.exec(e.text)
+    const ltSwitch = LT_SWITCH.exec(e.text)
     const isShortcut =
-      READOUT_SHORTCUT.test(e.text) || MUTE_SHORTCUT.test(e.text) || p40Switch !== null || omtSwitch !== null
+      READOUT_SHORTCUT.test(e.text) ||
+      MUTE_SHORTCUT.test(e.text) ||
+      p40Switch !== null ||
+      omtSwitch !== null ||
+      ltSwitch !== null
     // One message per turn: a message he types while a turn is running gets its own reply, so the guard lets
     // the next text through.
     const typed = omtTypedWords(e, isShortcut)
@@ -783,6 +1292,26 @@ export const register: Register = on => {
             : guardOn
               ? 'The one-message guard is on.'
               : 'The one-message guard is off.',
+        ),
+      )
+    }
+    if (ltSwitch) {
+      // Item 17: the same shape as the one-message switch; it takes effect at once, in this turn too.
+      const guardOn = (ltSwitch[1] ?? '').toLowerCase() === 'on'
+      let saved = true
+      try {
+        await $.store.set(LT_STORE_KEY, guardOn)
+        ltOn = guardOn
+      } catch {
+        saved = false
+      }
+      context.push(
+        LT_SWITCH_ORDER(
+          !saved
+            ? 'Long turn switch failed: the setting could not be saved.'
+            : guardOn
+              ? 'The long turn guard is on.'
+              : 'The long turn guard is off.',
         ),
       )
     }
@@ -826,6 +1355,16 @@ export const register: Register = on => {
     return entering(typed, () => next({ ...e, context }))
   })
 
+  // The long turn guard (item 17): the session's title, for the log line, from the settings hooks' own events.
+  on('classic.SessionStart', async ($, e, next) => {
+    ltTakeTitle(e)
+    return next(e)
+  })
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    ltTakeTitle(e)
+    return next(e)
+  })
+
   // The model's tool for "what's my context at".
   on('tool.call', { tool: 'mcp__context-guard__context_fill' }, async $ => {
     return { result: await readout($) }
@@ -853,6 +1392,8 @@ export const register: Register = on => {
       inProgress: String(input.in_progress ?? '').trim().slice(0, 2000) || 'none given',
       nextStep: String(input.next ?? '').trim().slice(0, 2000) || 'none given',
     }
+    // Item 17: this turn is the compaction's; the long turn guard leaves the rest of it alone and logs nothing.
+    ltExempt = true
     await p40Log($, `compact_now: queued, notes "${notes.slice(0, 200)}"`)
     return {
       result:
@@ -876,14 +1417,98 @@ export const register: Register = on => {
   }).catch(() => ({ result: 'p40_test failed inside the mod; nothing was run.' }))
 
   // The full-message row (item 15): the call's result is his whole message, which is what the row opens to.
+  // 1.0.29: a call he cannot see (no marker before it in its step) is sent back to be made again, unless the
+  // quote for these words already went out above a row this turn or the turn has used up its redos.
   on('tool.call', { tool: FULL_TOOL }, async (_, e) => {
     if (e.agentId !== undefined) return { result: 'Refused: only the main conversation.' }
-    return { result: omtDueWords() ?? 'There is no message of his to show for this reply.' }
+    const words = omtDueWords()
+    const isBare = omtRowBare
+    omtRowBare = false
+    if (words === undefined) return { result: 'There is no message of his to show for this reply.' }
+    if (omtOn && isBare && omtRowShown !== words && omtRowRedos < OMT_ROW_REDOS) {
+      omtRowRedos += 1
+      // This hook answers the call itself, so the hook below that hands held text back never sees it: hand
+      // back here what was held before this call, as that hook would.
+      if (omtDue.length === 0) return { result: FULL_ROW_REDO }
+      const note = OMT_HELD_NOTE(omtDue.join('\n\n'))
+      omtDue = []
+      return { result: FULL_ROW_REDO, context: [note] }
+    }
+    return { result: words }
   }).catch(() => ({ result: 'view_full_message failed inside the mod.' }))
 
+  // The 60-second ask (item 19). No box from a subagent, on an unattended run, or in a Peck session; otherwise the
+  // box, and the time it waits on him is not the turn's own (item 17).
+  on('tool.call', { tool: WORKER_ASK_TOOL }, async ($, e) => {
+    const input = e as unknown as { higher?: unknown; lower?: unknown; job?: unknown; unattended?: unknown }
+    const higher = workerLabel(input.higher)
+    const lower = workerLabel(input.lower)
+    const job = workerJob(input.job)
+    if (higher.length === 0 || lower.length === 0 || higher.toLowerCase() === lower.toLowerCase()) {
+      return {
+        result:
+          'Refused: name the higher option and the lower option, and make them different (for example higher "Fable at Max", lower "Opus at Extra"). Nothing was asked.',
+      }
+    }
+    if (!ltWorkerRead) await ltReadWorker($)
+    const noBox =
+      e.agentId !== undefined
+        ? 'it was started from inside a Peck, so nobody was asked'
+        : input.unattended === true
+          ? 'an unattended run, so nobody was asked'
+          : ltWorker
+            ? 'a Peck session, so nobody was asked'
+            : undefined
+    if (noBox !== undefined) {
+      await p40Log($, `ask_a_peck, ${higher} or ${lower}: no box (${noBox})`)
+      return { result: WORKER_USE(lower, `No box: ${noBox}.`, WORKER_LOWER_LINE(lower, higher, noBox)) }
+    }
+    const isHeld = ltActive(undefined) && ltStart !== undefined
+    if (isHeld) ltHold(await ltNow($))
+    let r: WorkerPick
+    try {
+      r = await workerAsk($, higher, lower, job)
+    } finally {
+      if (isHeld) ltRelease(await ltNow($))
+    }
+    await p40Log($, `ask_a_peck, ${higher} or ${lower}: ${r.pick}${r.typed === undefined ? '' : ` "${r.typed.slice(0, 200)}"`}${r.isStillUp ? '; the box is still up after its minute: the companion box closer is not loaded in this session' : ''}`)
+    if (r.pick === 'higher') return { result: WORKER_USE(higher, 'Chris picked it in the box.') }
+    // A tap on the lower option is his pick: no "ran lower" line for the brief (Chris "1", 2026-11-22 evening).
+    if (r.pick === 'lower') return { result: WORKER_USE(lower, 'Chris picked it in the box.') }
+    if (r.pick === 'typed') {
+      return {
+        result:
+          `Chris typed in the box instead of tapping: "${r.typed ?? ''}". If his words plainly pick ${higher}, start the ` +
+          `Peck on it. Otherwise USE: ${lower}, and put this line in the Peck's brief, word for word: ` +
+          `"${WORKER_LOWER_LINE(lower, higher, 'Chris typed in the box instead of picking')}" Answer his words in your message.`,
+      }
+    }
+    const why = r.pick === 'closed' ? 'Chris closed the box without a pick' : 'Chris did not answer the 60-second box'
+    const how = r.pick === 'closed' ? 'The box closed with no pick.' : 'No answer in 1 minute.'
+    return { result: WORKER_USE(lower, how, WORKER_LOWER_LINE(lower, higher, why), r.isStillUp ? WORKER_STILL_UP : undefined) }
+  }).catch(() => ({
+    result:
+      'ask_a_peck failed inside the mod, so nobody was asked: start the Peck on the lower option, and say in its brief that its report must say in one line it ran lower than the main wanted.',
+  }))
+
   // One message per turn (item 12). A main-loop turn starts clean, with the switch as stored.
+  // The long turn guard (item 17) shares this hook: a main-loop turn starts its clock, with its switch as stored;
+  // the mod's own auto compact prompt starts a turn the guard leaves alone.
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
+      try {
+        ltOn = (await $.store.get(LT_STORE_KEY)) !== false
+      } catch {
+        ltOn = true
+      }
+      if (!ltWorkerRead) await ltReadWorker($)
+      ltStart = await ltNow($)
+      ltPaused = 0
+      ltOpen = 0
+      ltCalls = 0
+      ltNoted = undefined
+      ltExempt = ltStartExempt || e.text.includes(P40_GO_HEAD)
+      ltStartExempt = false
       omtRunning = true
       omtDue = []
       omtHeld = []
@@ -899,6 +1524,9 @@ export const register: Register = on => {
       if (omtWords !== undefined) omtForget(omtWords)
       omtStartWords = undefined
       omtRowFor = undefined
+      omtRowShown = undefined
+      omtRowBare = false
+      omtRowRedos = 0
       try {
         omtOn = (await $.store.get(OMT_STORE_KEY)) !== false
       } catch {
@@ -929,9 +1557,11 @@ export const register: Register = on => {
         // of the words the reply now due answers; anywhere else it is dropped, unrecorded.
         heldHere = true
         const words = isRow ? omtDueWords() : undefined
-        const quote = words === undefined ? '' : omtFullHeader(words).trimEnd()
+        // 1.0.29: the quote goes above one row per message, so a second row for the same words drops its marker.
+        const quote = words === undefined || words === omtRowShown ? '' : omtFullHeader(words).trimEnd()
         if (quote === '') return out.filter(c => c.kind !== 'text')
         omtRowFor = words
+        omtRowShown = words
         shown += `${quote}\n\n`
         const swapped: TurnStepChunk[] = []
         let isPut = false
@@ -965,11 +1595,13 @@ export const register: Register = on => {
           if (words !== undefined) {
             omtForget(words)
             if (omtRowFor === words) {
-              // Its quote already went out above the full-message row.
+              // Its quote already went out above the full-message row; a copy the model typed again is taken out.
               omtRowFor = undefined
               omtBefore = true
-              shown += said
-              return out
+              const [under, kept] = omtUnderRow(out, said, words)
+              if (kept !== said) heldHere = true
+              shown += kept
+              return under
             }
             const [stamped, withHeader] = omtStamp(out, said, words)
             omtBefore = true
@@ -987,10 +1619,12 @@ export const register: Register = on => {
       // the reply when anything came before it in this turn. Never doubled if the model wrote one itself.
       // Item 14: a turn that answers a message he typed always gets the header with his words.
       if (omtRowFor !== undefined && omtRowFor === omtWords) {
-        // Item 15: its quote already went out above the full-message row.
+        // Item 15: its quote already went out above the full-message row; a copy the model typed again is taken out.
         omtRowFor = undefined
-        shown += said
-        return out
+        const [under, kept] = omtUnderRow(out, said, omtWords)
+        if (kept !== said) heldHere = true
+        shown += kept
+        return under
       }
       if (omtBefore || omtWords !== undefined) {
         const [stamped, withHeader] = omtStamp(out, said, omtWords)
@@ -1014,7 +1648,10 @@ export const register: Register = on => {
         text += c.text
       } else if (c.kind === 'tool') {
         sawTool = true
-        for (const k of settle(false, FULL_TOOL.test(c.name))) yield k
+        const isRow = FULL_TOOL.test(c.name)
+        // 1.0.29: read before settle clears the step's text; the row's tool.call reads it.
+        if (isRow) omtRowBare = !OMT_ROW_MARK.test(text)
+        for (const k of settle(false, isRow)) yield k
         omtBefore = true
         yield c
       } else if (c.kind === 'stop') {
@@ -1027,20 +1664,52 @@ export const register: Register = on => {
   })
 
   // Held text goes back to the model beside the next tool result: the model reads it, Chris never sees it.
+  // The long turn guard (item 17) shares this hook (the engine takes one hook per event with no matcher): on a main
+  // session's own loop, a long foreground wait on the shell is refused before it runs; a question box the model
+  // opens holds the turn's clock while it waits on him; and past a minute of the turn's own time a note rides beside
+  // the result, at most once a minute. It never blocks any other call. The tools the hooks above answer themselves
+  // (the mod's own) never reach here, which costs nothing: compact_now marks its turn as the compaction's.
   on('tool.call', async ($, e, next) => {
-    const r = await next(e)
-    if (omtDue.length === 0 || e.agentId !== undefined) return r
-    if ((r as { deny?: unknown }).deny !== undefined) return r
-    const note = OMT_HELD_NOTE(omtDue.join('\n\n'))
-    omtDue = []
+    const isLong = ltActive(e.agentId)
+    if (isLong && (e.tool === 'Bash' || e.tool === 'PowerShell')) {
+      const why = ltShellWait(e as unknown as { command?: unknown; timeout?: unknown; run_in_background?: unknown })
+      if (why !== undefined) return { deny: LT_WAIT_DENY(why) }
+    }
+    const isAskTool = LT_ASK_TOOL.test(e.tool)
+    if (isAskTool && LT_OWN_BOX.test(ltAskText(e))) return next(e)
+    const isTimed = isLong && ltStart !== undefined
+    const isAsk = isTimed && isAskTool
+    if (isTimed) ltCalls += 1
+    if (isAsk) ltHold(await ltNow($))
+    let r: Awaited<ReturnType<typeof next>>
+    try {
+      r = await next(e)
+    } finally {
+      if (isAsk) ltRelease(await ltNow($))
+    }
+    if (e.agentId !== undefined || (r as { deny?: unknown }).deny !== undefined) return r
+    const notes: string[] = []
+    if (omtDue.length > 0) {
+      notes.push(OMT_HELD_NOTE(omtDue.join('\n\n')))
+      omtDue = []
+    }
+    if (isTimed && !isAsk && !ltExempt && ltActive(e.agentId)) {
+      const ran = ltElapsed(await ltNow($))
+      if (ran > LT_LIMIT_MS && (ltNoted === undefined || ran - ltNoted >= LT_LIMIT_MS)) {
+        ltNoted = ran
+        notes.push(LT_TURN_NOTE(Math.floor(ran / 60_000)))
+      }
+    }
+    if (notes.length === 0) return r
     const prior = (r as { context?: unknown }).context
-    return { ...r, context: [...(Array.isArray(prior) ? (prior as string[]) : []), note] } as unknown as typeof r
+    return { ...r, context: [...(Array.isArray(prior) ? (prior as string[]) : []), ...notes] } as unknown as typeof r
   })
 
   // Between turns, never inside one. A stopped turn drops the queued compaction.
   on('turn.complete', async ($, e, next) => {
     const under = await next(e)
     if (e.agentId !== undefined) return under
+    await ltEnd($)
     const result = omtEnd(under)
     // The test tool's line step runs here, at the current fill, as a line just crossed would.
     if (p40TestLine !== undefined) {
@@ -1067,6 +1736,8 @@ export const register: Register = on => {
 
   // Whatever triggers a compaction, the summarizer is told to keep the rules and the NEXT pointer.
   // An auto-compaction also records the fire point and scolds.
+  // The long turn guard (item 17) shares this hook: a compaction inside a turn (the app's own takes one to three
+  // minutes) holds the turn's clock. A precompute runs beside the turn, so it holds nothing.
   on('session.compact', async ($, e, next) => {
     // A subagent's or a fork's own transcript compacting is not this conversation (Chris 2026-11-22: the
     // "Auto-compacted at 33 percent. WE BLEW IT" box popped in Printing when its background agent filled its
@@ -1078,7 +1749,14 @@ export const register: Register = on => {
     const instructions = e.instructions?.includes(PIN_HEADER)
       ? e.instructions
       : (e.instructions ? `${e.instructions}\n\n` : '') + (isAutoP40 ? AUTO_REREAD : '') + PIN_HEADER + rulesText
-    const result = await next({ ...e, instructions })
+    const isHeld = ltStart !== undefined && e.trigger !== 'precompute'
+    if (isHeld) ltHold(await ltNow($))
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next({ ...e, instructions })
+    } finally {
+      if (isHeld) ltRelease(await ltNow($))
+    }
     if (e.trigger === 'precompute' || result.skip !== undefined) return result
     const pct = lastPct
     if (e.trigger === 'auto' && pct !== undefined) {
