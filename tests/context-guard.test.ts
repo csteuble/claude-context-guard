@@ -10,6 +10,7 @@ import {
   omtCopyLength,
   omtFullHeader,
   omtHeader,
+  omtRowMarks,
 } from '../hooks/register'
 
 const usage = (percent: number | undefined, window = 200_000) => ({
@@ -1093,6 +1094,84 @@ test('full message row: other text before a row with no marker is held, and the 
   expect((await runStep($ as never, 1)).text).toBe(omtFullHeader(LONG).trimEnd())
   expect((await callRow($)).result).toBe(LONG)
   expect((await runStep($ as never, 2)).text).toBe('Done.')
+})
+
+// 2026-11-23 fix: the model typed the finished header in place of QUOTE 13 times, and each one was held and sent back.
+test('full message row: a typed header of his words in place of the marker becomes the quote, and the row is not sent back', async ($, on) => {
+  harness(on, { fetchOk: true })
+  // Real shapes: the copy cut at exactly the quote length mid-word, the copy cut with a space before the "…", and
+  // the quote alone with no line of dashes.
+  const typed = [
+    `${BREAK}\n\n> *${LONG.slice(0, OMT_QUOTE_MAX)}…*`,
+    `${BREAK}\n\n> *${LONG.slice(0, 90)}…*\n\n`,
+    omtHeader(LONG).trimEnd(),
+  ]
+  omt(on, typed.flatMap(t => [[T(t), ROW, STOP('tool_use')], [T('**TLDR:** done.'), STOP('end_turn')]]))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 0; i < typed.length; i++) {
+    await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+    await $.turn.start({ text: LONG, turnId: `t${i}` } as never)
+    const row = await runStep($ as never, 2 * i)
+    expect(row.text).toBe(omtFullHeader(LONG).trimEnd())
+    expect(row.out.map(c => c.kind).join(',')).toBe('text,tool,stop')
+    const r = await callRow($)
+    expect(r.result).toBe(LONG)
+    // Nothing was held, so no note rides beside the result.
+    expect(r.context).toBe(undefined)
+    expect((await runStep($ as never, 2 * i + 1)).text).toBe('**TLDR:** done.')
+    await $.turn.complete(turnEnd())
+  }
+})
+
+test('full message row: a typed header counts only when it is his words and nothing else', async ($, on) => {
+  harness(on, { fetchOk: true })
+  expect(omtRowMarks('QUOTE', LONG)).toBe(true)
+  expect(omtRowMarks(omtFullHeader(LONG), LONG)).toBe(true)
+  expect(omtRowMarks(`${omtFullHeader(LONG)}**TLDR:** done.`, LONG)).toBe(false)
+  expect(omtRowMarks(omtFullHeader(LONG), undefined)).toBe(false)
+  expect(omtRowMarks(BREAK, LONG)).toBe(false)
+  // Somebody else's words in the quote: held, and the row is sent back.
+  omt(on, [[T(`${BREAK}\n\n> *Measure twice, cut once.*`), ROW, STOP('tool_use')], [T('QUOTE'), ROW, STOP('tool_use')], [T('Done.'), STOP('end_turn')]])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)
+  await $.turn.start({ text: LONG, turnId: 't1' } as never)
+  expect((await runStep($ as never, 0)).text).toBe('')
+  const back = await callRow($)
+  expect(back.result).toBe(FULL_ROW_REDO)
+  expect(String(back.context)).toContain('> *Measure twice, cut once.*\nHELD TEXT END')
+  expect((await runStep($ as never, 1)).text).toBe(omtFullHeader(LONG).trimEnd())
+  expect((await callRow($)).result).toBe(LONG)
+  expect((await runStep($ as never, 2)).text).toBe('Done.')
+})
+
+test('full message row: a typed header for a long message typed mid-turn shows its row, not the sent-back order', async ($, on) => {
+  harness(on, { fetchOk: true })
+  // Real case 2026-11-23 10:11: the typed header went out and the row opened to the NOT SHOWN order.
+  omt(on, [
+    [T(`${BREAK}\n\n`), T(`> *${LONG.slice(0, OMT_QUOTE_MAX)}…*`), ROW, STOP('tool_use')],
+    [T('About five minutes.'), TOOL, STOP('tool_use')],
+    [T('All built.'), STOP('end_turn')],
+  ])
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'build it', origin: { kind: 'sdk' } } as never)
+  await $.turn.start({ text: 'build it', turnId: 't1' } as never)
+  expect(hasRowOrder(await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never))).toBe(true)
+  const row = await runStep($ as never, 0)
+  expect(row.text).toBe(omtFullHeader(LONG).trimEnd())
+  expect(row.out.map(c => c.kind).join(',')).toBe('text,tool,stop')
+  expect((await callRow($)).result).toBe(LONG)
+  expect((await runStep($ as never, 1)).text).toBe('About five minutes.')
+  expect((await runStep($ as never, 2)).text).toBe(`${omtFullHeader('build it')}All built.`)
+})
+
+test('full message row: the order and the sent-back order say the marker step is the one exception and must not be bare', async ($, on) => {
+  harness(on, { fetchOk: true })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const order = ((await $.prompt.submit({ text: LONG, origin: { kind: 'bridge' } } as never)) as { context?: readonly string[] }).context ?? []
+  const text = order.find(c => c.startsWith('FULL MESSAGE ROW (context-guard)')) ?? ''
+  expect(text).toContain('the one exception to the rule that nothing is written before a tool call')
+  expect(text).toContain('never make it bare')
+  expect(FULL_ROW_REDO).toContain('the one exception to the one-message rule and to any held-text note')
 })
 
 test('full message row: a row with no marker is sent back at most twice a turn, then the quote stays on the reply', async ($, on) => {

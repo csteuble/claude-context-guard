@@ -284,12 +284,20 @@ export const OMT_ROW_MARK = /^[\s"'`*>]*QUOTE[\s"'`*.]*$/i
 export function omtIsCut(words: string): boolean {
   return Array.from(words.replace(/\s+/g, ' ').trim()).length > OMT_QUOTE_MAX
 }
+// 2026-11-23 fix (Porter, "you still got bugs in that"): the model broke this order two ways. It typed the
+// finished header in place of QUOTE, since the conversation it reads back holds the mod's quote where it wrote
+// QUOTE; omtRowMarks now takes that as the marker. And it made the call with no text at all, since the one-message
+// rule and the held-text note say to write nothing before a tool call; the order and the redo now say this step is
+// the one exception. A bare call is still the model's to avoid: the mod cannot put text in front of it.
 export const FULL_ROW_ORDER =
   'FULL MESSAGE ROW (context-guard): his message above is longer than the quote the mod puts over your reply. ' +
   'Give him a row he can tap to read all of it: when your tools are done and you are about to write your one ' +
   'message, first make one step that holds only the text QUOTE and one call of the tool mcp__context-guard__-_view_full_message with no ' +
   'arguments (load it among your first tool calls with ToolSearch, query "select:mcp__context-guard__-_view_full_message"). The mod turns QUOTE into the quote of his ' +
-  'words, and the row opens to his whole message. Then write your message in the next step, with no quote and ' +
+  'words, and the row opens to his whole message (your earlier rows read back with that quote in place of ' +
+  'QUOTE; typing the quote yourself there works too). That step is the one exception to the rule that nothing ' +
+  'is written before a tool call: a call with no text before it in its step is folded away on his phone, so ' +
+  'never make it bare. Then write your message in the next step, with no quote and ' +
   'no line of dashes of your own above it. Do not mention the row or this order.'
 // 1.0.29 (Chris: "make the mod place it by itself so it can't be missed"): a row call with no QUOTE text before it
 // in its step is folded away on his phone. The mod cannot put a text block of its own in front of it: the engine
@@ -300,7 +308,8 @@ export const OMT_ROW_REDOS = 2
 export const FULL_ROW_REDO =
   'FULL MESSAGE ROW (context-guard): NOT SHOWN. This call came in a step with no text QUOTE before it, so his ' +
   'phone folds it away and he cannot see the row. Call this tool again now, in a step that holds only the text ' +
-  'QUOTE and this one call with no arguments, then write your message in the next step, with no quote and no ' +
+  'QUOTE and this one call with no arguments. That step is the one exception to the one-message rule and to any ' +
+  'held-text note: it must not be bare. Then write your message in the next step, with no quote and no ' +
   'line of dashes of your own above it. Do not mention the row or this order.'
 // Where a message he typed comes from: the terminal, the phone (Remote Control), the desktop app's SDK host. An
 // event with no origin (only the test harness raises one) counts as typed.
@@ -736,6 +745,15 @@ function omtTypedCopy(said: string, words: string | undefined): number {
   if (n === 0) return 0
   rest = rest.slice(n).trimStart()
   return said.length - rest.length
+}
+
+// Item 15, 2026-11-23 fix: whether a row call's step text is the marker. The word QUOTE, or a typed header of the
+// words now due and nothing else: a copy or near copy of their quote, with or without its line of dashes (13 times
+// from 2026-11-22 to 11-23 the model typed that in place of QUOTE, and each one was held and the row sent back).
+export function omtRowMarks(said: string, words: string | undefined): boolean {
+  if (OMT_ROW_MARK.test(said)) return true
+  const n = omtTypedCopy(said, words)
+  return n > 0 && said.slice(n).trim() === ''
 }
 
 // Takes the first `total` characters off a message's text chunks and puts `header` on the first text chunk.
@@ -1546,15 +1564,16 @@ export const register: Register = on => {
     let shown = ''
     let sawTool = false
     let heldHere = false
-    const settle = (isLast: boolean, isRow = false): TurnStepChunk[] => {
+    const settle = (isLast: boolean, isRow = false, isMark = false): TurnStepChunk[] => {
       const out = kept
       const said = text
       kept = []
       text = ''
       if (said.trim().length === 0) return out
-      if (!isLast && OMT_ROW_MARK.test(said)) {
+      if (!isLast && (isMark || OMT_ROW_MARK.test(said))) {
         // Item 15: the marker line is never his to read. Right above the full-message row it becomes the quote
-        // of the words the reply now due answers; anywhere else it is dropped, unrecorded.
+        // of the words the reply now due answers; anywhere else it is dropped, unrecorded. A typed header counts
+        // as the marker only right above the row (isMark).
         heldHere = true
         const words = isRow ? omtDueWords() : undefined
         // 1.0.29: the quote goes above one row per message, so a second row for the same words drops its marker.
@@ -1649,9 +1668,11 @@ export const register: Register = on => {
       } else if (c.kind === 'tool') {
         sawTool = true
         const isRow = FULL_TOOL.test(c.name)
-        // 1.0.29: read before settle clears the step's text; the row's tool.call reads it.
-        if (isRow) omtRowBare = !OMT_ROW_MARK.test(text)
-        for (const k of settle(false, isRow)) yield k
+        // 1.0.29: read before settle clears the step's text; the row's tool.call reads it. 2026-11-23: a typed
+        // header of the words now due counts as the marker, and settle puts the mod's own quote in its place.
+        const isMark = isRow && omtRowMarks(text, omtDueWords())
+        if (isRow) omtRowBare = !isMark
+        for (const k of settle(false, isRow, isMark)) yield k
         omtBefore = true
         yield c
       } else if (c.kind === 'stop') {
