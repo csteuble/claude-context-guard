@@ -57,6 +57,11 @@
 //    the whole message "P40 off" in any session stores a flag that brings back the old three warning boxes
 //    (item 2) in every session, with no release; "P40 on" returns this. A deferred tool, p40_test, runs the
 //    step of line 1, 2, or 3 at the current fill, for tests.
+//    Draft 2026-11-23 (PETER's 65% box, unreleased): an open box is kept in $.state until it settles, so a mod
+//    reload or a lost hooks worker inside its minute (either drops the old copy's timers) no longer leaves it with
+//    nothing to act: the new copy keeps the minute and starts the compaction when it runs out. And the P40 log
+//    follows the session's project root, not the shell's directory, so a reload after a shell `cd` keeps it in
+//    the project's _Claude\P40 Compact Notes folder.
 // 12. One message per turn (Chris 2026-11-21, his "Yes" to the rule and "a mod guard backs it"): the rule is
 //    "One message per turn, and it comes last." The guard: in a main-loop turn, text the model writes before a
 //    tool call is held back (never shown, never recorded) and handed back to the model beside that tool's
@@ -116,8 +121,20 @@
 //    companion plugin context-guard-box closes it at its minute, as it does the P40 box. When the box is still up a
 //    moment after the minute (the companion is not loaded in that session), the answer says so and the P40 log notes
 //    it; the P40 box (item 11) gets the same note in the log.
+// 20. The open failure guard (draft 2026-11-23, unreleased; Chris, relayed by PETER about 21:15: "This part where you do
+//    shit and then something ducks it up and then you just fucking abandon it has to Stop."; rule L8: build the guard,
+//    since rules A9 and L5 did not fire). Beside every message he types in a main session, the mod reads the done files
+//    of delegated jobs in the session's own project folder (<root>\_Claude\<name> Done <task>.txt, the newest 50 by
+//    time, each read again only when it changed) and lists every one still open: an item whose last state is FAILED,
+//    STOPPED, or ERROR with no later success line for that item, or a batch with no DONE line (BATCH DONE, PLAQUE DONE,
+//    DONE) whose file has been silent over 15 minutes. Each rides as "OPEN FAILURE: <file> | <last line, 100
+//    characters> | <age>", with one order: re-run it or put it to Chris in the turn's one message. Only two things
+//    close one: a later success line in that file, or a line the main appends to it, "CLEARED <date time> <reason>".
+//    There is no switch. Not in a subagent (it raises no prompt.submit), a Peck session (LONG TURNS OK, item 17), or
+//    on a message he did not type (an app note, a shortcut, the mod's own prompt).
 import type { EngineInterface, Register, TurnStepChunk } from 'claude-code'
 
+import type { P40Pending } from '../types'
 import { RULES, RULES_URL } from './rules'
 
 const STORE_KEY = 'firePoints'
@@ -215,6 +232,8 @@ const P40_ASK_MS = 60_000
 const P40_BUTTONS = ['Compact now', 'Wait'] as const
 export const P40_ASK_TEXT = (p: number) => `Context ${p}%. Auto compact will begin in 1 minute.`
 export const P40_START_LINE = (p: number) => `Context ${p}%. Auto compact is starting now.`
+// The open box, kept where a reload does not reach it (types/index.d.ts).
+const P40_PENDING = { plugin: 'context-guard', key: 'p40Pending' } as const
 const P40_GO_HEAD = 'P40 AUTO COMPACT (context-guard).'
 const P40_GO_PROMPT = (p: number) =>
   `${P40_GO_HEAD} This session has reached a context line and compacts in place now. ` +
@@ -510,6 +529,87 @@ export function ltShellWait(input: { command?: unknown; timeout?: unknown; run_i
   return slept > LT_LIMIT_MS / 1000 ? `it sleeps about ${Math.round(slept)} seconds in all` : undefined
 }
 
+// The open failure guard (item 20). A done file is "<anything> Done <task>.txt" in the project's _Claude folder (the
+// Bambu Driver's "Driver Done <task>.txt" is the one in use on 2026-11-23). Each line is read by its first 60
+// characters, where the formats in use put their state word: "FAILED 13:40 | ...", "Plate 1 FAILED 11:07 | ...",
+// "A | FAILED | ...", "Plate 06 READY 07:44 | ...", "BATCH DONE 20:33", "STAND DONE 11:07 (FAILED, not saved)". The
+// text before the state word names the item ("plate 1", "a"); none names the whole job. A failure word in the head
+// wins over a success word. A success line closes the same item, and one that names no item closes the whole job.
+export const OF_MAX_FILES = 50
+export const OF_QUIET_MS = 15 * 60_000
+const OF_FILE = /^[^\\/]* Done [^\\/]*\.txt$/
+const OF_HEAD = 60
+const OF_SHOW = 100
+const OF_FAIL = /\b(?:FAILED|STOPPED|ERROR)\b/
+const OF_STATE =
+  /\b(?:FAILED|STOPPED|ERROR|READY|DONE|SENT|SAVED|PREPPED|CHECKED|READ|LOOKED|UNLOADED|FIXED|PASSED|FINISHED|COMPLETE|COMPLETED)\b/
+const OF_END = /\bDONE\b/
+export const OF_CLEARED = /^\s*CLEARED\b/
+// A batch line with no state word, "01 | 3h 46m | ...": a short item label before the first bar.
+const OF_ITEM = /^([^|:]{1,8}?)\s*\|/
+export const OF_LINE = (name: string, last: string, age: string) => `OPEN FAILURE: ${name} | ${last} | ${age}`
+export const OF_ORDER = (dir: string) =>
+  'OPEN FAILURES (context-guard): each OPEN FAILURE line above is a job a session handed off whose done file ' +
+  `(in ${dir}) ends failed, stopped, or with an error, or a batch that stopped writing over 15 minutes ago with ` +
+  'no DONE line. Nothing has closed it. In this turn, for each one, either re-run it (the whole job or the part ' +
+  "that failed) or put it to Chris in the turn's one message: what the job was, where it stopped, and what you " +
+  'propose. Never drop one silently. These lines ride beside every message he types until each job is closed, ' +
+  'and only two things close one: a later success line for that item in the same file (the re-run finished), or ' +
+  'a line you append to the end of that file, "CLEARED <date time> <reason>", with his words when Chris dropped ' +
+  'it. Append CLEARED only when the job truly finished another way or Chris dropped it, never just to quiet ' +
+  'these lines.'
+
+type OfLineKind = { kind: 'fail' | 'ok' | 'item' | 'other'; key: string; isEnd: boolean }
+const ofKey = (s: string): string =>
+  s.replace(/[\s|:,(-]+$/, '').replace(/\s+/g, ' ').trim().toLowerCase()
+
+export function ofLineKind(line: string): OfLineKind {
+  const head = line.slice(0, OF_HEAD)
+  const m = OF_STATE.exec(head)
+  if (m !== null) {
+    return { kind: OF_FAIL.test(head) ? 'fail' : 'ok', key: ofKey(head.slice(0, m.index)), isEnd: OF_END.test(head) }
+  }
+  const item = OF_ITEM.exec(line)
+  return item === null ? { kind: 'other', key: '', isEnd: false } : { kind: 'item', key: ofKey(item[1] ?? ''), isEnd: false }
+}
+
+// Whether a done file is open, given how long it has been silent. Only the lines after its last CLEARED line count.
+export function ofIsOpen(text: string, quietMs: number): boolean {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0)
+  let from = 0
+  lines.forEach((l, i) => {
+    if (OF_CLEARED.test(l)) from = i + 1
+  })
+  const state = new Map<string, 'fail' | 'ok'>()
+  let isBatch = false
+  let isEnded = false
+  for (const l of lines.slice(from)) {
+    const p = ofLineKind(l)
+    if (p.isEnd) isEnded = true
+    if (p.key !== '' && !p.isEnd && p.kind !== 'other') isBatch = true
+    if (p.kind === 'fail') state.set(p.key, 'fail')
+    else if (p.kind === 'ok') {
+      if (p.key === '') for (const k of state.keys()) state.set(k, 'ok')
+      state.set(p.key, 'ok')
+    }
+  }
+  return [...state.values()].includes('fail') || (isBatch && !isEnded && quietMs > OF_QUIET_MS)
+}
+
+// The file's last line as the OPEN FAILURE line shows it: one line, its first 100 characters.
+export function ofLast(text: string): string {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0)
+  return Array.from((lines[lines.length - 1] ?? '(empty)').replace(/\s+/g, ' ')).slice(0, OF_SHOW).join('')
+}
+
+// How long the file has been silent: "12 min", "9h 47m", "3 days".
+export function ofAge(ms: number): string {
+  const min = Math.max(0, Math.floor(ms / 60_000))
+  if (min < 60) return `${min} min`
+  const h = Math.floor(min / 60)
+  return h < 48 ? `${h}h ${min % 60}m` : `${Math.floor(h / 24)} days`
+}
+
 // A line holding only a non-breaking space, so the chat cannot squeeze a blank line away.
 const BLANK = ' '
 
@@ -556,6 +656,8 @@ let p40GoSent = false
 let p40RideNext: number | undefined
 // The line p40_test was asked to run, waiting for the turn to end.
 let p40TestLine: number | undefined
+// The open box's record is written in order: the clear of a box answered at once never lands before its opening.
+let p40PendingChain: Promise<void> = Promise.resolve()
 // One message per turn (item 12): the switch as read at the turn's start; whether a main-loop turn is running;
 // text held this turn and not yet handed back to the model; all text held this turn (shown beneath the turn's
 // end if no last message came); replies owed to messages he typed while the turn ran.
@@ -606,6 +708,55 @@ let ltCalls = 0
 let ltNoted: number | undefined
 let ltExempt = false
 let ltStartExempt = false
+
+// The open failure guard (item 20): the session's project root, read at session start; and the done files' text by
+// path, with the time and size it was read at, so a file is read again only when it changed.
+let ofRoot: string | undefined
+let ofCache = new Map<string, { mtimeMs: number; size: number; text: string }>()
+
+// The OPEN FAILURE lines and their order for the message he just typed, or undefined when nothing is open. Reads one
+// folder's listing and only the done files that changed since the last look; never breaks the hook.
+async function ofScan($: EngineInterface): Promise<string | undefined> {
+  if (ofRoot === undefined) {
+    try {
+      const root = await $.session.root()
+      if (typeof root === 'string' && root.length > 0) ofRoot = root
+    } catch {
+      return undefined
+    }
+  }
+  if (ofRoot === undefined) return undefined
+  const dir = `${ofRoot.replace(/[\\/]+$/, '')}/_Claude`
+  let entries: Array<{ name: string; kind: string; size: number; mtimeMs: number }>
+  try {
+    entries = await $.fs.list(dir)
+  } catch {
+    return undefined
+  }
+  const now = await ltNow($)
+  const done = entries
+    .filter(f => f.kind === 'file' && OF_FILE.test(f.name))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, OF_MAX_FILES)
+  const seen = new Map<string, { mtimeMs: number; size: number; text: string }>()
+  const lines: string[] = []
+  for (const f of done) {
+    const path = `${dir}/${f.name}`
+    let hit = ofCache.get(path)
+    if (hit === undefined || hit.mtimeMs !== f.mtimeMs || hit.size !== f.size) {
+      try {
+        hit = { mtimeMs: f.mtimeMs, size: f.size, text: await $.fs.read(path) }
+      } catch {
+        continue
+      }
+    }
+    seen.set(path, hit)
+    const quiet = now - f.mtimeMs
+    if (ofIsOpen(hit.text, quiet)) lines.push(OF_LINE(f.name, ofLast(hit.text), ofAge(quiet)))
+  }
+  ofCache = seen
+  return lines.length === 0 ? undefined : `${lines.join('\n')}\n${OF_ORDER(dir.replace(/\//g, '\\'))}`
+}
 
 async function ltNow($: EngineInterface): Promise<number> {
   try {
@@ -808,6 +959,82 @@ function p40LogBeside(notes: string): void {
   p40LogPath = cut < 0 ? undefined : `${notes.slice(0, cut + 1)}${P40_LOG_NAME}`
 }
 
+// The folder the P40 log goes under at a session start: the session's project root, which a shell `cd` does not
+// move. The start's own directory does move with it, and a reload runs session.start again: PETER 2026-11-23, a
+// reload at 15:19 while its shell sat in the vault root sent its P40 lines to the vault root's _Claude folder
+// until a compact_now set the path again. The start's directory only when the root cannot be read.
+async function p40Root($: EngineInterface, e: unknown): Promise<string | undefined> {
+  try {
+    const root = await $.session.root()
+    if (typeof root === 'string' && root.length > 0) return root
+  } catch {
+    // no root to read
+  }
+  const cwd = (e as { cwd?: unknown }).cwd
+  return typeof cwd === 'string' && cwd.length > 0 ? cwd : undefined
+}
+
+// The open P40 box's record, written in order. A failed write leaves a box working as before; only a reload
+// inside its minute is then not covered.
+function p40PendingWrite($: EngineInterface, value: () => Promise<P40Pending | null>): void {
+  p40PendingChain = p40PendingChain.then(async () => {
+    try {
+      await $.state.set(P40_PENDING, await value())
+    } catch {
+      // the record is a backstop, never a reason for a hook to fail
+    }
+  })
+}
+
+// At a session start: a box left waiting by a copy of the mod that a reload or a lost hooks worker replaced. Its
+// timer went with the old copy, so nothing would act on it and nothing would say so. The new copy keeps the
+// minute and acts as the old one would have: the compaction starts when it runs out. A tap after the reload
+// reached only the old copy and is not seen here, so the minute decides.
+async function p40Resume($: EngineInterface): Promise<void> {
+  let held: P40Pending | null | undefined
+  try {
+    held = (await $.state.get(P40_PENDING)).value
+  } catch {
+    return
+  }
+  if (held === undefined || held === null) return
+  const box = held
+  if (!(await p40IsOn($))) {
+    p40PendingWrite($, async () => null)
+    await p40Log($, `a reload found the ${box.pct}% box still waiting, but P40 is off: nothing starts`)
+    return
+  }
+  const left = box.deadline - (await ltNow($))
+  await p40Log(
+    $,
+    left > 0
+      ? `a mod reload came while the ${box.pct}% box was up: its timer went with the old copy, and the new copy keeps the minute (${Math.ceil(left / 1000)} seconds left)`
+      : `a mod reload came after the ${box.pct}% box's minute ran out and before it acted: it acts now`,
+  )
+  const act = async (): Promise<void> => {
+    try {
+      const now = (await $.state.get(P40_PENDING)).value
+      // Settled meanwhile (a compaction cleared it, or another reload took it over).
+      if (now === undefined || now === null || now.deadline !== box.deadline) return
+    } catch {
+      // cannot read it again: act on what the reload found
+    }
+    p40PendingWrite($, async () => null)
+    try {
+      const pct = (await $.session.usage()).context.percent
+      if (pct !== undefined && pct < TIER_PCTS[0]) {
+        await p40Log($, `the ${box.pct}% box's minute ran out after a reload, but the fill is ${Math.round(pct)}% now: nothing starts`)
+        return
+      }
+    } catch {
+      // no reading: act
+    }
+    p40Go($, box.pct, 'no answer in 1 minute; a mod reload dropped its timer, and the new copy kept the minute')
+  }
+  if (left > 0) $.clock.after(left, () => void act())
+  else await act()
+}
+
 async function p40Log($: EngineInterface, line: string): Promise<void> {
   await logLine($, p40LogPath, line)
 }
@@ -965,12 +1192,15 @@ function p40Ask($: EngineInterface, pct: number): void {
   const decide = (how: 'now' | 'wait' | 'timeout'): void => {
     if (settled) return
     settled = true
+    p40PendingWrite($, async () => null)
     if (how === 'wait') {
       void p40Log($, `asked at ${pct}%: Wait`)
       return
     }
     p40Go($, pct, how === 'now' ? 'Compact now' : 'no answer in 1 minute')
   }
+  // Kept until it settles, so a reload inside the minute does not leave it with nothing to act (p40Resume).
+  p40PendingWrite($, async () => ({ pct, deadline: (await ltNow($)) + P40_ASK_MS }))
   void $.ui.ask(P40_ASK_TEXT(pct), [...P40_BUTTONS]).then(
     answer => {
       isGone = true
@@ -1130,10 +1360,12 @@ export const register: Register = on => {
     ltStart = undefined
     ltOpen = 0
     ltPaused = 0
-    // The P40 log sits in the project's notes folder; steps before the first notes file are kept only if
-    // that folder already exists.
-    const cwd = (e as { cwd?: unknown }).cwd
-    if (typeof cwd === 'string' && cwd.length > 0) p40LogBeside(`${cwd}/_Claude/P40 Compact Notes/notes`)
+    // The P40 log sits in the project's notes folder, under the project root (p40Root: not the shell's
+    // directory, which a `cd` moves).
+    const root = await p40Root($, e)
+    if (root !== undefined) p40LogBeside(`${root}/_Claude/P40 Compact Notes/notes`)
+    // The open failure guard (item 20) reads the same project's _Claude folder.
+    ofRoot = root
     if (rulesSource !== 'repo') askBox($, RULES_BROKEN_BOX, RULES_BROKEN_BUTTONS)
     // Deferred (2026-11-06): a tool kept in front is not announced to the model when the mod attaches after
     // the conversation started (the 11-06 mid-session attach), while deferred tools are listed and loaded
@@ -1238,6 +1470,12 @@ export const register: Register = on => {
       }
     } catch {
       // no usage yet
+    }
+    // A box a replaced copy left waiting (draft 2026-11-23): its minute is kept here.
+    try {
+      await p40Resume($)
+    } catch {
+      // a backstop only
     }
     return next(e)
   })
@@ -1358,6 +1596,18 @@ export const register: Register = on => {
     }
     // Item 15: a typed message longer than the quote gets the row that opens to all of it.
     if (typed !== undefined && omtOn && omtIsCut(typed)) context.push(FULL_ROW_ORDER)
+    // Item 20: the open failures ride beside every message he types, in a main session only; no switch.
+    if (typed !== undefined) {
+      if (!ltWorkerRead) await ltReadWorker($)
+      if (!ltWorker) {
+        try {
+          const open = await ofScan($)
+          if (open !== undefined) context.push(open)
+        } catch {
+          // the guard never stops his message
+        }
+      }
+    }
     if (READOUT_SHORTCUT.test(e.text)) {
       context.push(`${SHORTCUT_ORDER}BEGIN\n${await readout($)}\nEND`)
     }
@@ -1787,6 +2037,8 @@ export const register: Register = on => {
     tiersFired = 0
     p40GoSent = false
     p40RideNext = undefined
+    // A box left waiting from before the compaction is not acted on after a reload.
+    p40PendingWrite($, async () => null)
     return result
   }).catch(($, e, next) => (next.called ? next(e) : next(e)))
 }

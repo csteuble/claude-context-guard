@@ -51,6 +51,17 @@ What it does:
    - Words typed instead of a tap go back to the main, with the lower option unless his words plainly pick the higher one.
    - When the answer is the lower option because the box got no tap (no answer in a minute, a box closed with no pick, words typed instead of a tap, or no box at all), it hands the main one line for the Peck's brief. The line makes the Peck's report say it ran lower than the main wanted, and why. A tap on the lower option is his own pick and gets no such line (Chris "1", 2026-11-22 evening).
    No box, and the lower option at once, in three cases: the call says `unattended: true` (an unattended run); the session is a Peck session (its brief carried the line `LONG TURNS OK`, item 14); the call comes from a subagent. The minute the box waits on him is not counted as the turn's own time (item 14). The companion (item 13) takes the box down at its minute. If the box is still up a moment after the minute, the answer tells the main to say in one line that it no longer counts, and the P40 log notes it. Whether the box shows the three lines as three lines on his desktop and his phone has not been seen yet.
+17. **The open failure guard** (draft for 1.0.34, not released; Chris 2026-11-23: "This part where you do shit and then something ducks it up and then you just fucking abandon it has to Stop."). A job a session hands off that fails, stops, or never finishes can no longer be dropped without a word.
+   - When: on every message Chris types in a main session. Not in a subagent, not in a Peck session (its brief carried `LONG TURNS OK`, item 14), and not on an app note, a task notification, a message from another session, the P40 prompt, or a shortcut.
+   - What it reads: the session's project `_Claude\` folder (the project root, as P40 finds it), only files named `<anything> Done <task>.txt` (today the `Driver Done *.txt` files), newest first, at most 50. A file is read again only when its time or size changed.
+   - Open: a file whose lines name an item (the text before its first state word, for example `Plate 13`, `A`, `Step 2`) whose last state is FAILED, STOPPED, or ERROR, with no later success line for that item. A success line that names no item closes the whole file; a `BATCH DONE` line does not close failed items. Also open: a batch (lines that name items) with no DONE line that has been silent over 15 minutes. The state word counts only in a line's first 60 characters, in capitals.
+   - What rides beside his message, one line per open file, then one order:
+     ```
+     OPEN FAILURE: <file name> | <last line, first 100 characters> | <age>
+     ```
+     The order: for each one, in this turn, re-run it or put it to Chris in the turn's one message (what the job was, where it stopped, what it proposes); never drop one silently.
+   - How one closes, and nothing else silences it (no switch): a later success line for that item in the same file, or a line the main appends to the end of that file, `CLEARED <date time> <reason>`, with Chris's words when he dropped it. Only lines after the last CLEARED line count, so a failure written after it opens the file again.
+   - Limits: a job that never wrote a done file is not seen; HELD and PAUSED are not failures; a failure older than the newest 50 done files falls out of view.
 
 ## Changing the rules
 
@@ -68,10 +79,11 @@ Answer `y` to add the marketplace, then pick a scope (user). The repo is private
 
 ## Checks
 
-`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 102 tests; the companion's 5 tests are on its own branch, `box` (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
+`claude plugin validate .` passes; `tsc -p .` is clean once the engine has laid the types; `claude plugin test .` runs 114 tests; the companion's 5 tests are on its own branch, `box` (warnings and their text, jump, auto and manual compaction, stored fire point, rules fetch and fallback, RULES BROKEN box and readout, the tool, the shortcuts, mute and unmute).
 
 ## Versions
 
+- 1.0.34 (2026-11-23, released by PORTER on Chris's "a fix for this needs to happen asap"): the open failure guard (item 17), six tests added; the P40 box stuck fix (the P40 log follows the project root, and an open box kept in `$.state` survives a reload), six tests added. 114 tests.
 - 1.0.33 (2026-11-23): the full-message row (item 12): a step whose only text is a typed copy of the header for his words counts as `QUOTE`; the order and the redo say that step is the one exception to writing nothing before a tool call. Four tests added (102). Released on Chris's "if you say you fixed it, then fucking implement it."
 - 1.0.32: no change; pushed so open sessions reload
 - 1.0.31 (2026-11-22): the Peck type `context-guard:peck` (item 15: Opus, High, every tool, compacts at 300,000 tokens) and the 60-second ask for Fable or Max, `ask_a_peck` (item 16). The companion goes to 0.2.0 and closes the Peck box too. The P40 log notes a box still up after its minute (item 13 says why that happened on 2026-11-22). Built on 1.0.30, which was not pushed. Thirteen tests added (95); one added to the companion (5). Then the near-copy quote fix (item 11), three tests added (98). Then his names and box words (2026-11-22 evening): the type `worker` became `peck`, the tool `worker_ask` became `ask_a_peck`, the box became his three lines, and a tap on the lower option no longer hands the main the "ran lower" line (his "1"); still 98 tests, the companion still 5.

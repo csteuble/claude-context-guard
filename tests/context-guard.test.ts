@@ -1,12 +1,16 @@
+import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import {
   FULL_ROW_REDO,
+  OF_MAX_FILES,
+  OF_ORDER,
   OMT_QUOTE_MAX,
   WORKER_BOX,
   WORKER_COMPACT_AT,
   WORKER_STILL_UP,
   WORKER_TYPE,
   ltShellWait,
+  ofIsOpen,
   omtCopyLength,
   omtFullHeader,
   omtHeader,
@@ -1815,4 +1819,281 @@ test('P40: a box the companion takes down at its minute leaves no still-up line'
   await clock.advance(65_000)
   expect(sentGo(h).length).toBe(1)
   expect(h.files[P40_LOG_FILE] ?? '').not.toContain('still up')
+})
+
+// ---------- Draft 2026-11-23: PETER's 65% box (the log in the wrong folder; a box whose timer a reload drops) ----------
+
+// A reload cancels the old copy's waits. The test stands for that by refusing the box's own minute: a refused
+// clock.after never runs its callback. Returns how many it refused.
+function dropTheBoxMinute(on: On): { count: number } {
+  const dropped = { count: 0 }
+  // A matcher: mock.clock holds the plain clock.after hook, and the test's on takes one hook per event otherwise.
+  on('clock.after', { ms: 60_000 }, (_, e, next) => {
+    if (dropped.count === 0) {
+      dropped.count += 1
+      return { deny: 'dropped with the old copy of the mod (a reload)' }
+    }
+    return next(e)
+  })
+  return dropped
+}
+
+test('P40: the log follows the project root, not a folder a shell cd moved the start to (PETER 2026-11-23)', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, answer: 'Wait' })
+  on('session.root', () => ({ value: 'C:/Project' }))
+  // A reload while the shell sat in another folder: the start is handed that folder.
+  await $.session.start({ cwd: 'C:/HomeInnovation/000 VAULT', surface: 'desktop', isInteractive: true } as never)
+  await $.session.measure(measure(61))
+  await clock.advance(1_000)
+  expect(h.files[P40_LOG_FILE]).toContain('asked at 61%: Wait')
+  expect(Object.keys(h.files).some(p => p.startsWith('C:/HomeInnovation'))).toBe(false)
+})
+
+test('P40: a mod reload inside the minute drops the box timer; the new copy keeps the minute, starts the compaction, and logs why', async ($, on) => {
+  const dropped = dropTheBoxMinute(on)
+  const clock = mock.clock(on)
+  // 66 percent, past lines 1 and 2, so the reload marks them passed (as in PETER); nobody taps, no companion.
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 66, askWait: () => new Promise(() => undefined) })
+  await $.session.start(P40_START)
+  await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 2 } as never)
+  await $.turn.complete(turnEnd())
+  await clock.settle()
+  // (The harness records a question only once the box is answered, and this one never is.)
+  expect(dropped.count).toBe(1)
+  await clock.advance(20_000)
+  // The reload, 20 seconds into the minute.
+  await $.session.start(P40_START)
+  expect(h.files[P40_LOG_FILE]).toContain('a mod reload came while the 66% box was up')
+  expect(h.files[P40_LOG_FILE]).toContain('(40 seconds left)')
+  await clock.advance(39_000)
+  expect(sentGo(h).length).toBe(0)
+  await clock.advance(2_500)
+  expect(sentGo(h).length).toBe(1)
+  expect(sentGo(h)[0]?.text).toContain('Context 66%. Auto compact is starting now.')
+  expect(h.files[P40_LOG_FILE]).toContain('auto compact starts at 66% (no answer in 1 minute; a mod reload dropped its timer')
+  // Nothing is left waiting: another reload finds no box and starts nothing.
+  await $.session.start(P40_START)
+  await clock.advance(70_000)
+  expect(sentGo(h).length).toBe(1)
+})
+
+test('P40: without a reload, the dropped-timer test stand-in starts nothing (the stand-in is what stops the old copy)', async ($, on) => {
+  const dropped = dropTheBoxMinute(on)
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 66, askWait: () => new Promise(() => undefined) })
+  await $.session.start(P40_START)
+  await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 2 } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(70_000)
+  expect(dropped.count).toBe(1)
+  expect(sentGo(h).length).toBe(0)
+})
+
+test('P40: a reload after the minute ran out, before the box acted, acts at once', async ($, on) => {
+  dropTheBoxMinute(on)
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 66, askWait: () => new Promise(() => undefined) })
+  await $.session.start(P40_START)
+  await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 2 } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(90_000)
+  expect(sentGo(h).length).toBe(0)
+  await $.session.start(P40_START)
+  await clock.advance(1_100)
+  expect(sentGo(h).length).toBe(1)
+  expect(h.files[P40_LOG_FILE]).toContain("a mod reload came after the 66% box's minute ran out and before it acted: it acts now")
+})
+
+test('P40: a box he answered, or one a compaction passed, leaves nothing for a reload to act on', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 66, answer: 'Wait' })
+  await $.session.start(P40_START)
+  await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 2 } as never)
+  await $.turn.complete(turnEnd())
+  await clock.settle()
+  expect(h.files[P40_LOG_FILE]).toContain('asked at 66%: Wait')
+  await $.session.start(P40_START)
+  await clock.advance(70_000)
+  expect(sentGo(h).length).toBe(0)
+  expect(h.files[P40_LOG_FILE]).not.toContain('reload')
+})
+
+test('P40: a box left waiting across a compaction is dropped at the reload, not acted on', async ($, on) => {
+  dropTheBoxMinute(on)
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true, p40On: true, usagePct: 66, askWait: () => new Promise(() => undefined) })
+  await $.session.start(P40_START)
+  await $.tool.call({ tool: 'mcp__context-guard__p40_test', line: 2 } as never)
+  await $.turn.complete(turnEnd())
+  await clock.advance(10_000)
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'hi', toolUses: [] }] })
+  await clock.settle()
+  await $.session.start(P40_START)
+  await clock.advance(70_000)
+  expect(sentGo(h).length).toBe(0)
+  expect(h.files[P40_LOG_FILE] ?? '').not.toContain('reload')
+})
+
+// ---------- Item 20, draft 2026-11-23: the open failure guard ----------
+
+// The project's _Claude folder on a disk in memory: put(name, text, minutes since it last changed). The lines are the
+// shapes of the Bambu Driver's real done files of 2026-11-23 (Personal\3D Printing\_Claude), cut short.
+const OF_DIR = 'C:/Project/_Claude'
+const OF_ORDER_TEXT = OF_ORDER('C:\\Project\\_Claude')
+function doneDisk(on: On, h: { files: Record<string, string> }, clock: { now: () => number }) {
+  const disk: Record<string, { size: number; mtimeMs: number }> = {}
+  on('session.root', () => ({ value: 'C:/Project' }))
+  on('fs.list', (_, e) => ({
+    value:
+      e.path.split('\\').join('/') !== OF_DIR
+        ? []
+        : Object.entries(disk).map(([name, f]) => ({ name, kind: 'file' as const, size: f.size, mtimeMs: f.mtimeMs, isLink: false })),
+  }))
+  return (name: string, text: string, minsAgo: number) => {
+    h.files[`${OF_DIR}/${name}`] = text
+    disk[name] = { size: text.length, mtimeMs: clock.now() - minsAgo * 60_000 }
+  }
+}
+// What rides beside a message he types: the open failure block, or '' when none rides.
+async function openFailures($: { prompt: { submit: (e: never) => Promise<{ context?: readonly string[] }> } }, text: string, more: Record<string, unknown> = {}) {
+  const r = await $.prompt.submit({ text, ...more } as never)
+  return (r.context ?? []).find(c => c.includes('OPEN FAILURE')) ?? ''
+}
+
+const STAND =
+  'Plate 1 FAILED 11:07 | not saved | Bambu Plate Stand with Drip Tray\n' +
+  'STAND DONE 11:07 (FAILED, not saved)\n' +
+  'FIX FAILED 11:11 | blocked mid-edit, not sliced, not saved | stand object set to normal(auto); while choosing its support/raft interface filament'
+const REMAINING =
+  'Plate 11 READY 07:36 | Cool Plate (SuperTack) bed 60 | walls 3 | 2h 19m\n' +
+  'Plate 12 READY 07:40 | Cool Plate (SuperTack) bed 60 | walls 3 | 2h 19m\n' +
+  'Plate 06 READY 07:44 | Cool Plate (SuperTack) bed 60 | walls 6 | 2h 19m'
+
+test('open failure: a done file whose last state is FAILED rides beside every message he types, with the one order', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  const put = doneDisk(on, h, clock)
+  put('Driver Done Prep Build Plate Stand.txt', STAND, 5)
+  put('Driver Done Unload Both Nozzles.txt', 'FAILED 13:40 | Unload clicks get no response | HMS before: none', 125)
+  // Every item failed and the batch still wrote its end line: a BATCH DONE does not close a failed item.
+  put('Driver Done Prep Overnight Runs 2.txt', 'A | FAILED | YOOPAI did not fit\nB | FAILED | 01 + 05 did not fit\nBATCH DONE 2026-11-22 15:14', 60 * 30)
+  await $.session.start(P40_START)
+  const open = await openFailures($, 'what is next?')
+  expect(open.split('\n')).toEqual([
+    'OPEN FAILURE: Driver Done Prep Build Plate Stand.txt | FIX FAILED 11:11 | blocked mid-edit, not sliced, not saved | stand object set to normal(auto); while | 5 min',
+    'OPEN FAILURE: Driver Done Unload Both Nozzles.txt | FAILED 13:40 | Unload clicks get no response | HMS before: none | 2h 5m',
+    'OPEN FAILURE: Driver Done Prep Overnight Runs 2.txt | BATCH DONE 2026-11-22 15:14 | 30h 0m',
+    OF_ORDER_TEXT,
+  ])
+  expect(OF_ORDER_TEXT).toContain("re-run it (the whole job or the part that failed) or put it to Chris in the turn's one message")
+  expect(OF_ORDER_TEXT).toContain('"CLEARED <date time> <reason>"')
+  // It comes back on the next message, and the next: nothing but a success line or CLEARED quiets it.
+  expect(await openFailures($, 'ok')).toContain('OPEN FAILURE: Driver Done Prep Build Plate Stand.txt')
+  await clock.advance(3 * 24 * 60 * 60_000)
+  expect(await openFailures($, 'and now?')).toContain('Driver Done Unload Both Nozzles.txt | FAILED 13:40 | Unload clicks get no response | HMS before: none | 3 days')
+})
+
+test('open failure: a FAILED item closed by a later success line for it is not shown; a success for another item does not close it', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  const put = doneDisk(on, h, clock)
+  // The whole job failed, then the fix finished (a success line that names no item closes the job).
+  put('Driver Done Prep Track Switch Holder.txt', 'FAILED 09:43 | supports needed, stopped before saving\nREADY 09:50 (fixed) | supports OFF on holder', 600)
+  // Item by item: Plate 1 failed, then Plate 1 was made ready.
+  put('Driver Done Prep Plates.txt', 'Plate 1 FAILED 11:07 | no fit\nPlate 2 READY 11:10 | ok\nPlate 1 READY 11:30 | refit\nBATCH DONE 11:31', 300)
+  await $.session.start(P40_START)
+  expect(await openFailures($, 'next?')).toBe('')
+  // Plate 2's success does not close Plate 1.
+  put('Driver Done Prep Plates.txt', 'Plate 1 FAILED 11:07 | no fit\nPlate 2 READY 11:10 | ok\nBATCH DONE 11:31', 300)
+  expect(await openFailures($, 'next?')).toContain('OPEN FAILURE: Driver Done Prep Plates.txt | BATCH DONE 11:31 | 5h 0m')
+  // A failure after the success opens it again (the last state counts).
+  put('Driver Done Prep Track Switch Holder.txt', 'FAILED 09:43 | x\nREADY 09:50 (fixed) | y\nSTOPPED 10:02 | Studio closed', 1)
+  expect(await openFailures($, 'next?')).toContain('OPEN FAILURE: Driver Done Prep Track Switch Holder.txt | STOPPED 10:02 | Studio closed | 1 min')
+  expect(ofIsOpen('ERROR 10:00 | the driver crashed', 0)).toBe(true)
+  // A lower-case word in a line's tail is not a state: "Error: 7 non-manifold edges" on a success line.
+  expect(ofIsOpen('17 | 0h 23m | 11.91 g | PASS: no supports | saved | On open: Error: 7 non-manifold edges\nBATCH DONE 07:12', 600)).toBe(false)
+})
+
+test('open failure: a batch with no DONE line that has been silent over 15 minutes is open; under 15 minutes it is not shown', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  const put = doneDisk(on, h, clock)
+  put('Driver Done Prep Remaining Drawer Plates.txt', REMAINING, 14)
+  // A finished batch, and one-line jobs, are never open by age.
+  put('Driver Done Reslice Sled Feet Plates.txt', '04 READY 20:23 | 4h 13m\n05 READY 20:28 | 4h 32m\nBATCH DONE 20:33', 600)
+  put('Driver Done Re-Prep Data Daddy Plaque.txt', 'Sign READY 09:11 | 2h 59m\nBase READY 09:15 | 1h 37m\nPLAQUE DONE 09:15', 600)
+  put('Driver Done Send Drawer Plate 08.txt', 'SENT 07:26 | plate Textured PEI Plate', 600)
+  put('Driver Done Prep Drawer Plates F.txt', '01 | 3h 46m | 121.19 g | PASS\n02 | 5h 33m | 244.74 g | PASS\nBATCH DONE 2026-11-22 10:13', 600)
+  await $.session.start(P40_START)
+  expect(await openFailures($, 'how is the batch going?')).toBe('')
+  await clock.advance(2 * 60_000)
+  expect(await openFailures($, 'and now?')).toBe(
+    `OPEN FAILURE: Driver Done Prep Remaining Drawer Plates.txt | Plate 06 READY 07:44 | Cool Plate (SuperTack) bed 60 | walls 6 | 2h 19m | 16 min\n${OF_ORDER_TEXT}`,
+  )
+  // A batch line with no state word ("01 | ...") counts as a batch too.
+  expect(ofIsOpen('01 | 3h 46m | 121.19 g | PASS\n02 | 5h 33m | 244.74 g | PASS', 16 * 60_000)).toBe(true)
+  expect(ofIsOpen('01 | 3h 46m | 121.19 g | PASS\n02 | 5h 33m | 244.74 g | PASS', 14 * 60_000)).toBe(false)
+  // A one-line status with a clock time before the bar (the Pause Print file) is not a batch item.
+  expect(ofIsOpen('PAUSED 14:17 | was: Printing, layer 3/225 | by: driver', 600 * 60_000)).toBe(false)
+})
+
+test('open failure: a CLEARED line the main appends closes it; a failure written after it opens it again', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  const put = doneDisk(on, h, clock)
+  put('Driver Done Prep Build Plate Stand.txt', STAND, 30)
+  put('Driver Done Prep Remaining Drawer Plates.txt', REMAINING, 90)
+  await $.session.start(P40_START)
+  expect((await openFailures($, 'next?')).split('\n').length).toBe(3)
+  put('Driver Done Prep Build Plate Stand.txt', `${STAND}\nCLEARED 2026-11-23 21:40 Chris: "drop the plate stand, I'll print it later"`, 0)
+  put('Driver Done Prep Remaining Drawer Plates.txt', `${REMAINING}\nCLEARED 2026-11-23 21:41 re-run as Driver Done Prep Drawer Plates G, BATCH DONE there`, 0)
+  expect(await openFailures($, 'next?')).toBe('')
+  // Nothing else silences it: a message that talks about clearing, or one that says to drop it, changes nothing.
+  put('Driver Done Prep Build Plate Stand.txt', `${STAND}\nCLEARED 2026-11-23 21:40 Chris dropped it\nFIX FAILED 21:50 | tried again, Studio froze`, 0)
+  expect(await openFailures($, 'CLEARED all of them')).toBe(
+    `OPEN FAILURE: Driver Done Prep Build Plate Stand.txt | FIX FAILED 21:50 | tried again, Studio froze | 0 min\n${OF_ORDER_TEXT}`,
+  )
+  // CLEARED counts only at the start of a line.
+  expect(ofIsOpen('FAILED 09:43 | not CLEARED yet', 0)).toBe(true)
+})
+
+test('open failure: a subagent, a Peck session, an app note, and a shortcut see nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  omt(on, [])
+  const put = doneDisk(on, h, clock)
+  on('session.id', () => ({ value: 'peck-1' }))
+  put('Driver Done Prep Build Plate Stand.txt', STAND, 5)
+  await $.session.start(P40_START)
+  // A subagent raises no prompt.submit; its own turn and tool calls get nothing from the guard.
+  await $.turn.start({ text: 'sub job', turnId: 's1', agentId: 'agent-1' } as never)
+  const sub = (await $.tool.call({ tool: 'mcp__x__y', agentId: 'agent-1' } as never)) as Called
+  expect(String(sub.context ?? '')).not.toContain('OPEN FAILURE')
+  await $.turn.complete({ ...(turnEnd() as object), agentId: 'agent-1' } as never)
+  // Not his words: the app's notes, and the shortcuts.
+  expect(await openFailures($, '<task-notification>the stall watch exited</task-notification>', { origin: { kind: 'task-notification' } })).toBe('')
+  expect(await openFailures($, 'Another session says hi', { origin: { kind: 'peer' } })).toBe('')
+  expect(await openFailures($, 'CC')).toBe('')
+  // His typed message in the main gets it.
+  expect(await openFailures($, 'next?')).toContain('OPEN FAILURE: Driver Done Prep Build Plate Stand.txt')
+  // A Peck session (its brief carried LONG TURNS OK) gets nothing, then or on any later message.
+  expect(await openFailures($, 'You are a Peck for Porter.\nLONG TURNS OK\nDo the build.')).toBe('')
+  expect(await openFailures($, 'next?')).toBe('')
+  expect(h.store.longTurnWorkers).toEqual(['peck-1'])
+})
+
+test('open failure: only the newest 50 done files are read, and only those named "<x> Done <task>.txt"', async ($, on) => {
+  const clock = mock.clock(on)
+  const h = harness(on, { fetchOk: true })
+  const put = doneDisk(on, h, clock)
+  put('Driver Done Old Failure.txt', 'FAILED 01:00 | old', 60 * 24 * 5)
+  for (let i = 0; i < OF_MAX_FILES; i += 1) put(`Driver Done Job ${i}.txt`, 'READY 08:00 | fine', 60 + i)
+  put('Driver Stall Watch.sh', 'FAILED', 1)
+  put('Excel Driver Done Refresh.txt', 'ERROR 20:00 | the workbook was locked', 3)
+  await $.session.start(P40_START)
+  const open = await openFailures($, 'next?')
+  expect(open).toContain('OPEN FAILURE: Excel Driver Done Refresh.txt | ERROR 20:00 | the workbook was locked | 3 min')
+  expect(open).not.toContain('Old Failure')
+  expect(open).not.toContain('Stall Watch')
 })
